@@ -1,0 +1,17 @@
+# Reference instance — the owner's vault, as a sibling checkout.
+# Paths resolve relative to this file. The context policy shown here is also the
+# package default; it is spelled out so the reference instance is explicit about
+# the asymmetry it relies on (see src/ragmark/config.py for the rationale).
+
+vault_root = "../../the-vault"
+
+# Directories never indexed (dot-directories are always excluded).
+excluded_dirs = ["templates"]
+
+[context_dirs]
+work = "work"
+personal = "personal"
+
+[visible_scopes]
+personal = ["personal", "work"]
+work = ["work"]

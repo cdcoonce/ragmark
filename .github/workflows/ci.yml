@@ -1,0 +1,38 @@
+name: CI
+
+# Mirrors graphmark's gate. The macOS leg exists because the afk executor gates on Linux
+# only — OS-specific escapes must surface here, not at release time. The python leg covers
+# every version the pyproject classifiers advertise.
+#
+# The teeth-check step is part of the gate (the-vault#144): the context-gating suite must
+# FAIL when the gate is defanged. A gating suite that stays green with the filter off is
+# itself a build failure, so it is enforced here, not by convention.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    name: gate (${{ matrix.os }}, py${{ matrix.python }})
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Lint
+        run: uv run --extra dev ruff check .
+      - name: Format check
+        run: uv run --extra dev ruff format --check .
+      - name: Tests
+        run: uv run --extra dev pytest -q
+      - name: Gating teeth-check (suite must go red when defanged)
+        run: uv run --extra dev python scripts/teeth_check.py

@@ -1,0 +1,54 @@
+name: Release
+
+# Deploy-on-promotion, graphmark's exact machinery: when `dev` is merged into `main`, this
+# runs the gate, then python-semantic-release reads the conventional-commit history since the
+# last tag, decides the bump, updates pyproject.toml + CHANGELOG.md, commits, tags
+# `v<version>`, and cuts a GitHub release. If (and only if) a new version was released, the
+# package is built and published to PyPI via OIDC Trusted Publishing — no API token stored.
+#
+# One-time PyPI setup (Trusted Publishing, PENDING — Charles): pypi.org -> Your projects ->
+# Publishing -> add a *pending* trusted publisher with project: ragmark, owner: cdcoonce,
+# repo: ragmark, workflow: release.yml (environment blank). Until that exists, the publish
+# step fails and everything before it (version, changelog, tag, GitHub release) still works.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version bump commit + tag, create the GitHub release
+      id-token: write # PyPI Trusted Publishing (OIDC)
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Gate (ruff + format + tests + teeth) before releasing
+        run: |
+          uv run --extra dev ruff check .
+          uv run --extra dev ruff format --check .
+          uv run --extra dev pytest -q
+          uv run --extra dev python scripts/teeth_check.py
+
+      - name: Semantic release (version, changelog, tag, GitHub release)
+        id: release
+        uses: python-semantic-release/python-semantic-release@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
+        run: |
+          uv build
+          uv publish --trusted-publishing always

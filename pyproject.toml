@@ -1,0 +1,110 @@
+[project]
+name = "ragmark"
+version = "0.1.0"
+description = "Local-first retrieval over markdown / [[wikilink]] vaults — hybrid search, wikilink-aware context, first-party MCP surface."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Charles Coonce", email = "charlescoonce@gmail.com" }]
+keywords = ["rag", "retrieval", "markdown", "wikilink", "obsidian", "mcp", "local-first"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+# fastembed is deliberately range-pinned here and exact-pinned by uv.lock; the runtime
+# defense against model drift is the index manifest, which records model name/dim/version
+# and refuses a mismatched index (decision: the-vault#140).
+dependencies = [
+    "graphmark>=0.9,<1.0",
+    "fastembed>=0.8,<0.9",
+    "numpy>=2,<3",
+    "pyyaml>=6,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/cdcoonce/ragmark"
+Repository = "https://github.com/cdcoonce/ragmark"
+Issues = "https://github.com/cdcoonce/ragmark/issues"
+
+[project.optional-dependencies]
+# The MCP face is optional so library/CLI consumers never inherit a server dependency.
+mcp = ["fastmcp>=2,<4"]
+# Reserved (the-vault#141): generation activates via `ragmark[generate]` only when a local
+# model server is wanted. Deliberately not defined yet — v1 is retrieval-only.
+dev = ["pytest>=8.0", "ruff>=0.6", "fastmcp>=2,<4"]
+# Installed by semantic_release.build_command, not by developers (see graphmark, same
+# machinery): the release action is Docker-based and ships without uv.
+build = ["uv>=0.7,<1.0"]
+
+[project.scripts]
+ragmark = "ragmark.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ragmark"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/ragmark",
+    "tests",
+    "docs/ROADMAP.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Strict xfails mark behavior the seed owes to a future slice: they stay red-as-expected
+# while a module raises NotImplementedError, and XPASS the moment an implementation lands —
+# forcing the conductor to promote them to real assertions in the same PR.
+xfail_strict = true
+markers = [
+    "gating: context-gating tests — teeth-checked by scripts/teeth_check.py (must go red when defanged)",
+]
+
+[tool.semantic_release]
+# Deploy-on-promotion, graphmark's exact machinery: when dev is promoted to main, the release
+# workflow runs python-semantic-release, which reads conventional commits since the last tag,
+# bumps project.version, writes CHANGELOG.md, tags v<version>, cuts a GitHub release, and
+# publishes to PyPI via OIDC Trusted Publishing.
+version_toml = ["pyproject.toml:project.version"]
+# Relock so the release commit carries a lockfile matching the stamped version; the package
+# name is a literal, and tests/test_lockfile_version.py pins it to project.name because uv
+# does not error on an unknown --upgrade-package name.
+build_command = """
+    python -m pip install -e '.[build]'
+    uv lock --upgrade-package ragmark
+    git add uv.lock
+"""
+tag_format = "v{version}"
+commit_message = "chore(release): {version} [skip ci]"
+# Pre-1.0: a breaking change bumps the minor, not the major, until the API is declared stable.
+major_on_zero = false
+allow_zero_version = true
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]

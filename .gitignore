@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.DS_Store
+
+# Indexes are derived, machine-local artifacts — never committed (the-vault#139: vault
+# note content never ships; the index contains embedded note text in its metadata).
+.ragmark/
+
+# afk build artifacts (config.toml is tracked once the repo enrolls; the noise is not)
+.afk/transcripts/
+.afk/worktrees/
+docs/dev-cycle/telemetry.jsonl
+docs/dev-cycle/last-run.md
+docs/dev-cycle/quarantine-log.md
