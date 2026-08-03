@@ -13,9 +13,14 @@ venv/
 # note content never ships; the index contains embedded note text in its metadata).
 .ragmark/
 
-# afk build artifacts (config.toml is tracked once the repo enrolls; the noise is not)
+# afk build artifacts (config.toml is tracked once the repo enrolls; the noise is not).
+# Transcripts especially: they are full agent conversation logs and this repo is public.
+# `.afk/question.md` is deliberately NOT ignored — a parked slice's escalation must travel
+# with its branch.
 .afk/transcripts/
 .afk/worktrees/
+.afk/mailbox/
+.afk/cycle.lock
 docs/dev-cycle/telemetry.jsonl
 docs/dev-cycle/last-run.md
 docs/dev-cycle/quarantine-log.md

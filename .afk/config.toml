@@ -1,0 +1,118 @@
+# AFK config — ragmark. Executor enabled for Track A/B/C package work.
+#
+# What makes this repo autonomous-safe: correctness is pinned by a QUALITY ORACLE the
+# executor cannot touch. The golden-query set is hand-curated and lives vault-side
+# (`.claude/ragmark/golden.toml` in the-vault), never in this repo, so a slice cannot edit
+# the thing that grades it. On top of that the gating suite is TEETH-CHECKED in CI
+# (scripts/teeth_check.py re-runs `gating` tests defanged and requires red), so a green gate
+# means the tests still bite. Track D (vault-side shim landings) and Track E (golden curation,
+# the model pick, API naming) are NOT autonomous — those are hand-driven by Charles.
+#
+# THE GATE IS CLAUDE.md's GATE, VERBATIM. ruff/pytest are dev optional-deps, so every leg
+# needs `--extra dev`; a bare `uv run ruff` would not resolve.
+test_command = "uv run --extra dev ruff check . && uv run --extra dev ruff format --check . && uv run --extra dev pytest -q && uv run --extra dev python scripts/teeth_check.py"
+permission_mode = "acceptEdits"
+
+# ---------------------------------------------------------------------------------------
+# BRANCH POSTURE — read this before changing either key. They are not interchangeable, and
+# the naming is actively misleading.
+#
+# VERIFIED IN afk's SOURCE 2026-08-02 (not inferred from another repo's config comment):
+#   - executor.py:474  slices fork from `integration_target`  <- NOT trunk_branch
+#   - executor.py:394  a per-slice PR opens ONLY when integration_target == "main",
+#                      and its base is integration_target
+#   => there is NO configuration under which afk opens a per-slice PR against `dev`.
+#      Leaving integration_target at its "main" default would fork slices off main AND
+#      open their PRs into main — and in THIS repo a merge to main runs release.yml and
+#      cuts a version. That is the failure this block exists to prevent.
+#
+# So ragmark uses the staging shape (afk's own dogfood posture):
+#   slices fork from and land on `afk/staging` with no per-slice PR, then ONE integration
+#   PR `afk/staging` -> `dev` carries the batch with a review packet. Charles promotes
+#   `dev` -> `main` by hand, which is the only thing that ever releases.
+#
+# trunk_branch still does real work even though it is not the fork base:
+#   - the `--cycle` preflight REFUSES to run unless local HEAD is this branch, then hard-
+#     resets local to origin/<trunk_branch> (cycle.py:316-324). This working copy must sit
+#     on `dev`, or every nightly wedges with "HEAD is 'main', not 'dev' — refusing to reset".
+#   - it is the base of the staging -> trunk integration PR (cycle.py:507).
+#
+# afk#1089 (OPEN): a bare `--execute` forks from the LOCAL integration_target ref, not the
+# remote. Reset local `afk/staging` to origin before any manual drain or the slice builds on
+# a stale base. In `--cycle` the pre-drain staging reset already covers this.
+#
+# GitHub closes a linked issue when its PR merges into the repo's DEFAULT branch. Here the
+# default branch is `dev` (`gh api repos/cdcoonce/ragmark --jq .default_branch`), and the
+# integration PR targets `dev` — so issues close when the batch lands, not at promote time.
+# Do not read `refs/remotes/origin/HEAD` in a local clone to check this; it is written once
+# at clone time and goes stale. Ask the API.
+integration_target = "afk/staging"
+trunk_branch = "dev"
+autonomy_frontier = "F2"
+
+# #1048: forwarded to the headless agent as `--allowedTools` (runtime.py:290-333). Load-
+# bearing, not decoration. A slice runs in a fresh worktree, and Claude Code DISCARDS every
+# `permissions.allow` entry in a workspace it has not trusted — argv is the only grant channel
+# that survives. With none set the executor runs NO Bash at all: the gate never executes and
+# the run reports a blocked slice rather than a failing one.
+#
+# afk additionally auto-derives grants from `test_command` (config.py:410-422), so these are
+# additive insurance rather than the sole source.
+#
+# Deliberately absent: anything that reaches the network (`gh`, `curl`, `git ls-remote`).
+# Egress is a security surface and no slice here needs it — data a slice needs gets
+# transcribed into the issue body by a human. KNOWN FUTURE GAP: the fastembed embedder
+# (Track A, `embed.py`) downloads a model on first use, so the slice that implements it will
+# need an egress decision — either a pre-warmed model cache mounted into the worktree or a
+# scoped grant. Decide it then, deliberately; do not widen this list pre-emptively.
+allowed_tools = [
+  "Bash(uv run --extra dev ruff:*)",
+  "Bash(uv run --extra dev pytest:*)",
+  "Bash(uv run --extra dev python:*)",
+  "Bash(uv run python:*)",
+  "Bash(uv --version:*)",
+  "Bash(uv pip list:*)",
+  "Bash(python3:*)",
+  "Bash(python:*)",
+]
+
+agent_prompt = """Implement the linked GitHub issue using test-driven development \
+(red-green-refactor). Read CLAUDE.md first — it is the contract for this repo.
+
+Four rules that override any instinct to make the suite green:
+1. The golden-query set is the quality oracle and is EXECUTOR-UNTOUCHABLE. It lives outside \
+this repo. You may run it; you may never generate, edit, or "fix" golden data. There is NO \
+parity oracle against the predecessor to fall back on. If a golden query looks wrong, stop \
+and flag it in your summary rather than working around it.
+2. Teeth stay in. `scripts/teeth_check.py` re-runs the `gating`-marked tests defanged and \
+requires red. Never weaken a `gating` test to make teeth pass.
+3. Implement WITHIN the seeded interfaces — model.py, config.py, gate.py's boundary, and the \
+module seams define the shape, and the MCP face is a decided contract pinned by \
+tests/test_mcp_face.py. Do not redesign boundaries or rename their types.
+4. Owed-behavior xfails in tests/test_contract.py are strict. When your slice implements one, \
+it XPASSes and fails the suite — the same PR must replace it with real behavior tests.
+
+Keep changes minimal and scoped to the issue's acceptance criteria. If the issue body \
+explicitly directs a change to a seeded surface (a human-triaged decision recorded in the \
+issue), the issue wins over the do-not-redesign default."""
+
+[caps]
+max_retries = 2
+timeout_seconds = 1800
+
+# model.frontier is required unconditionally (config.py:316-319) and model.cheap is required
+# whenever default_tier or reviewer_tier is "cheap" — an absent [model] table fails config
+# load outright, it does not quietly default.
+[model]
+cheap = "sonnet"
+frontier = "opus"
+default_tier = "cheap"
+reviewer_tier = "frontier"
+
+# docs/ROADMAP.md is written explicitly to be read verbatim by `afk-driver --expand`, so
+# `expand` is the producer that fits this repo. `harvest` mines merged-PR review comments for
+# prompt rules — inert until slices start landing, harmless before then. `scout` is omitted on
+# purpose: the epic's decomposed children are the queue, and a second proposal source this
+# early just competes with it.
+[cycle]
+producers = ["expand", "harvest"]
