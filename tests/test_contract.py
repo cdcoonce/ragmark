@@ -80,20 +80,6 @@ def test_owed_chunker(tmp_path: Path) -> None:
 
 
 @OWED
-def test_owed_parse() -> None:
-    from ragmark import parse
-
-    parse.parse_note("---\ntags: [x]\n---\nbody")
-
-
-@OWED
-def test_owed_render_for_embedding() -> None:
-    from ragmark import parse
-
-    parse.render_for_embedding("see [[Note|alias]]")
-
-
-@OWED
 def test_owed_refresh(tmp_path: Path) -> None:
     from ragmark import index
 
