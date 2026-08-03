@@ -32,7 +32,10 @@ def list_tools(config) -> list:
 
 
 def test_face_names_args_and_annotations(make_vault) -> None:
-    tools = {t.name: t for t in list_tools(make_vault("personal"))}
+    config = make_vault("personal")
+    assert ragmark_mcp.build_server(config).name == "vault"
+
+    tools = {t.name: t for t in list_tools(config)}
     assert set(tools) == set(EXPECTED_ARGS)
 
     for name, tool in tools.items():

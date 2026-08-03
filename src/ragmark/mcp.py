@@ -49,7 +49,7 @@ def build_server(config: RagmarkConfig) -> Any:
     """Build the FastMCP server exposing the read-only vault tools."""
     from fastmcp import FastMCP
 
-    mcp: Any = FastMCP("ragmark")
+    mcp: Any = FastMCP("vault")
     store = IndexStore(config.index_dir)
     embedder = FastembedEmbedder()
 
