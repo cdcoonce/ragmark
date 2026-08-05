@@ -20,7 +20,6 @@ import pytest
 from ragmark import activity, chunk, gaps, neighbors, search
 from ragmark.config import RagmarkConfig
 from ragmark.embed import FastembedEmbedder
-from ragmark.model import NoteMeta
 from ragmark.store import IndexStore
 
 OWED = pytest.mark.xfail(strict=True, raises=NotImplementedError, reason="owed to a build slice")
@@ -72,11 +71,6 @@ def test_owed_hybrid_search(tmp_path: Path) -> None:
 def test_owed_note_similarity(tmp_path: Path) -> None:
     config = seed_config(tmp_path)
     search.similar_notes("a.md", config=config, store=IndexStore(config.index_dir))
-
-
-@OWED
-def test_owed_chunker(tmp_path: Path) -> None:
-    chunk.chunk_note("a.md", "# A\n\nbody", NoteMeta(None, (), ()), count_tokens=len)
 
 
 @OWED
