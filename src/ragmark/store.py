@@ -18,7 +18,10 @@ infrastructure and the correctness contract leans on them:
   prompting rebuild, never a silent shape mismatch.
 
 Coherence between the two files is the conservation invariant's job (chunk
-rows ↔ vector rows, the-vault#144); `index.refresh` heals a torn pair.
+rows ↔ vector rows, the-vault#144). `index.refresh` heals staleness only;
+incoherence between the two files (a torn pair) is a detected,
+non-self-healing error (`IndexCorruptionError`) whose remedy is
+`ragmark index --force`.
 """
 
 from __future__ import annotations
@@ -59,6 +62,17 @@ CREATE INDEX IF NOT EXISTS idx_chunks_note ON chunks (note_path);
 
 class IndexIdentityError(Exception):
     """The on-disk index was built by a different model than requested."""
+
+
+class IndexCorruptionError(Exception):
+    """The on-disk index is BUILT but internally incoherent — never self-healed.
+
+    Raised only when a model identity row and at least one chunk row are
+    already present, yet `vectors.npy` disagrees with them (missing,
+    unreadable, or a mismatched row count) or the metadata database itself is
+    unreadable. `index.refresh` heals staleness, not incoherence — the
+    remedy is a forced rebuild, `ragmark index --force`.
+    """
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -140,6 +154,26 @@ class IndexStore:
             "`ragmark index --force`."
         )
 
+    def read_notes(self, conn: sqlite3.Connection) -> dict[str, tuple[str, int]]:
+        """Every recorded note as `note_path -> (sha256, mtime_ns)`."""
+        rows = conn.execute("SELECT note_path, sha256, mtime_ns FROM notes").fetchall()
+        return {note_path: (sha256, mtime_ns) for note_path, sha256, mtime_ns in rows}
+
+    def write_note(
+        self, conn: sqlite3.Connection, note_path: str, sha256: str, mtime_ns: int
+    ) -> None:
+        """Insert or replace one note's recorded hash and mtime."""
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO notes (note_path, sha256, mtime_ns) VALUES (?, ?, ?)",
+                (note_path, sha256, mtime_ns),
+            )
+
+    def delete_note(self, conn: sqlite3.Connection, note_path: str) -> None:
+        """Remove one note's recorded row (its chunk rows are a separate call)."""
+        with conn:
+            conn.execute("DELETE FROM notes WHERE note_path = ?", (note_path,))
+
     def replace_chunks(self, conn: sqlite3.Connection, note_path: str, chunks: list[Chunk]) -> None:
         """Replace one note's chunk rows in a single transaction."""
         with conn:
@@ -166,6 +200,22 @@ class IndexStore:
     def chunk_count(self, conn: sqlite3.Connection) -> int:
         """Number of chunk rows (one side of the conservation invariant)."""
         return int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+
+    def ordered_chunk_ids(self, conn: sqlite3.Connection) -> list[tuple[str, int]]:
+        """Every chunk's `(chunk_id, vector_row)`, in dense-compaction order
+        (`note_path` then `chunk_index`) — the read half of full recompaction."""
+        rows = conn.execute(
+            "SELECT chunk_id, vector_row FROM chunks ORDER BY note_path ASC, chunk_index ASC"
+        ).fetchall()
+        return [(chunk_id, vector_row) for chunk_id, vector_row in rows]
+
+    def assign_vector_rows(self, conn: sqlite3.Connection, vector_rows: dict[str, int]) -> None:
+        """Write a dense `vector_row` renumbering computed from `ordered_chunk_ids`."""
+        with conn:
+            conn.executemany(
+                "UPDATE chunks SET vector_row = ? WHERE chunk_id = ?",
+                [(row, chunk_id) for chunk_id, row in vector_rows.items()],
+            )
 
     def save_vectors(self, vectors: Any) -> None:
         """Persist the full vector matrix atomically (float32, N×dim)."""
