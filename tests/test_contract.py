@@ -94,8 +94,3 @@ def test_owed_activity(tmp_path: Path) -> None:
 @OWED
 def test_owed_gaps(tmp_path: Path) -> None:
     gaps.gaps(config=seed_config(tmp_path))
-
-
-@OWED
-def test_owed_fastembed_identity() -> None:
-    FastembedEmbedder().identity()

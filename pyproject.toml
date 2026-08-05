@@ -80,6 +80,7 @@ testpaths = ["tests"]
 xfail_strict = true
 markers = [
     "gating: context-gating tests — teeth-checked by scripts/teeth_check.py (must go red when defanged)",
+    "model: loads fastembed model weights — skipped when no warm cache is present",
 ]
 
 [tool.semantic_release]

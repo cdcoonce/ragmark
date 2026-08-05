@@ -16,8 +16,23 @@ from pathlib import Path
 import pytest
 
 from ragmark.config import CONTEXT_FILE, RagmarkConfig
+from ragmark.embed import FastembedEmbedder
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _skip_model_without_warm_cache(request: pytest.FixtureRequest) -> None:
+    """Skip `model`-marked tests when the fastembed cache has no model tree.
+
+    CI runs six legs with no warm cache and no cache-restore step; these
+    tests must not attempt a ~67 MB download.
+    """
+    if request.node.get_closest_marker("model") is None:
+        return
+    cache_dir = FastembedEmbedder._resolve_cache_dir(None)
+    if not (cache_dir / "models--qdrant--bge-small-en-v1.5-onnx-q").is_dir():
+        pytest.skip("no warm fastembed cache present")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
