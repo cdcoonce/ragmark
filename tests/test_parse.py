@@ -85,6 +85,31 @@ def test_render_preserves_inline_code_span() -> None:
     assert result == "run `# comment [[fake]] 5 * 3` now"
 
 
+def test_render_preserves_underscore_identifiers_in_prose() -> None:
+    assert render_for_embedding("see semantic_index.py for details") == (
+        "see semantic_index.py for details"
+    )
+    assert render_for_embedding("the __init__ method") == "the __init__ method"
+    assert render_for_embedding("snake_case_name in prose") == "snake_case_name in prose"
+    assert render_for_embedding("a lone 5 * 3") == "a lone 5 * 3"
+
+
+def test_render_underscore_run_with_no_whitespace_is_not_emphasis() -> None:
+    assert render_for_embedding("_oneword_") == "_oneword_"
+
+
+def test_render_underscore_run_with_whitespace_is_emphasis() -> None:
+    assert render_for_embedding("_two words here_") == "two words here"
+
+
+def test_render_leaves_unpaired_asterisk_untouched() -> None:
+    assert render_for_embedding("5 * 3") == "5 * 3"
+
+
+def test_render_leaves_run_of_four_or_more_delimiters_untouched() -> None:
+    assert render_for_embedding("****quad****") == "****quad****"
+
+
 def test_render_mixed_prose_and_code_survives_intact() -> None:
     text = (
         "# Heading\n\n"
