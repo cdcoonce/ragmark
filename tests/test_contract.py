@@ -12,6 +12,7 @@ Two kinds of test live here:
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -20,7 +21,6 @@ import pytest
 from ragmark import activity, chunk, gaps, neighbors, search
 from ragmark.config import RagmarkConfig
 from ragmark.embed import FastembedEmbedder
-from ragmark.model import NoteMeta
 from ragmark.store import IndexStore
 
 OWED = pytest.mark.xfail(strict=True, raises=NotImplementedError, reason="owed to a build slice")
@@ -75,33 +75,6 @@ def test_owed_note_similarity(tmp_path: Path) -> None:
 
 
 @OWED
-def test_owed_chunker(tmp_path: Path) -> None:
-    chunk.chunk_note("a.md", "# A\n\nbody", NoteMeta(None, (), ()), count_tokens=len)
-
-
-@OWED
-def test_owed_parse() -> None:
-    from ragmark import parse
-
-    parse.parse_note("---\ntags: [x]\n---\nbody")
-
-
-@OWED
-def test_owed_render_for_embedding() -> None:
-    from ragmark import parse
-
-    parse.render_for_embedding("see [[Note|alias]]")
-
-
-@OWED
-def test_owed_refresh(tmp_path: Path) -> None:
-    from ragmark import index
-
-    config = seed_config(tmp_path)
-    index.refresh(config, IndexStore(config.index_dir), FastembedEmbedder())
-
-
-@OWED
 def test_owed_neighbors(tmp_path: Path) -> None:
     neighbors.vault_neighbors("a.md", config=seed_config(tmp_path))
 
@@ -116,6 +89,21 @@ def test_owed_gaps(tmp_path: Path) -> None:
     gaps.gaps(config=seed_config(tmp_path))
 
 
-@OWED
-def test_owed_fastembed_identity() -> None:
-    FastembedEmbedder().identity()
+def test_exactly_five_owed_behaviors_remain() -> None:
+    """Guards the owed-xfail contract itself: each landing slice deletes its
+    own `test_owed_*` marker, so the surviving count is a live check that no
+    slice quietly dropped (or kept) one it shouldn't have."""
+    module = sys.modules[__name__]
+    owed = [
+        name
+        for name in dir(module)
+        if name.startswith("test_owed_")
+        and any(m.name == "xfail" for m in getattr(getattr(module, name), "pytestmark", ()))
+    ]
+    assert sorted(owed) == [
+        "test_owed_activity",
+        "test_owed_gaps",
+        "test_owed_hybrid_search",
+        "test_owed_neighbors",
+        "test_owed_note_similarity",
+    ]
