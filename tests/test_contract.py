@@ -20,8 +20,6 @@ import pytest
 
 from ragmark import activity, chunk, gaps, neighbors, search
 from ragmark.config import RagmarkConfig
-from ragmark.embed import FastembedEmbedder
-from ragmark.store import IndexStore
 
 OWED = pytest.mark.xfail(strict=True, raises=NotImplementedError, reason="owed to a build slice")
 
@@ -61,20 +59,6 @@ def seed_config(tmp_path: Path) -> RagmarkConfig:
 
 
 @OWED
-def test_owed_hybrid_search(tmp_path: Path) -> None:
-    config = seed_config(tmp_path)
-    search.search(
-        "q", config=config, store=IndexStore(config.index_dir), embedder=FastembedEmbedder()
-    )
-
-
-@OWED
-def test_owed_note_similarity(tmp_path: Path) -> None:
-    config = seed_config(tmp_path)
-    search.similar_notes("a.md", config=config, store=IndexStore(config.index_dir))
-
-
-@OWED
 def test_owed_neighbors(tmp_path: Path) -> None:
     neighbors.vault_neighbors("a.md", config=seed_config(tmp_path))
 
@@ -89,7 +73,7 @@ def test_owed_gaps(tmp_path: Path) -> None:
     gaps.gaps(config=seed_config(tmp_path))
 
 
-def test_exactly_five_owed_behaviors_remain() -> None:
+def test_exactly_three_owed_behaviors_remain() -> None:
     """Guards the owed-xfail contract itself: each landing slice deletes its
     own `test_owed_*` marker, so the surviving count is a live check that no
     slice quietly dropped (or kept) one it shouldn't have."""
@@ -103,7 +87,5 @@ def test_exactly_five_owed_behaviors_remain() -> None:
     assert sorted(owed) == [
         "test_owed_activity",
         "test_owed_gaps",
-        "test_owed_hybrid_search",
         "test_owed_neighbors",
-        "test_owed_note_similarity",
     ]

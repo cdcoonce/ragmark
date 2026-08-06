@@ -15,6 +15,7 @@ import sys
 import numpy as np
 import pytest
 
+from ragmark import search
 from ragmark.cli import VAULT_ENV, _build_parser, _json_dump, main
 from ragmark.embed import Embedder
 from ragmark.golden import GoldenQuery, GoldenReport, GoldenRow
@@ -42,7 +43,19 @@ def test_no_vault_exits_2_with_message(monkeypatch, capsys) -> None:
 
 
 def test_not_implemented_seam_exits_2_with_message(monkeypatch, capsys, make_vault) -> None:
+    """The CLI's error boundary, not the search seam.
+
+    `search` is implemented now, so the stub is injected here: this test is
+    about `main()` turning a seam's `NotImplementedError` into exit 2 with a
+    message instead of a traceback, and it must keep testing exactly that as
+    the remaining seams land.
+    """
+
+    def unimplemented_seam(*args, **kwargs):
+        raise NotImplementedError("build slice: a seam not yet landed")
+
     config = make_vault("personal")
+    monkeypatch.setattr(search, "search", unimplemented_seam)
     monkeypatch.delenv(VAULT_ENV, raising=False)
     monkeypatch.setattr(sys, "argv", ["ragmark", "--vault", str(config.vault_root), "search", "q"])
 
@@ -92,8 +105,6 @@ def test_parser_exposes_all_subcommands() -> None:
 
 
 def test_search_parser_arguments() -> None:
-    from ragmark import search
-
     parser = _build_parser()
     args = parser.parse_args(["search", "hello"])
     assert args.query == "hello"
