@@ -209,6 +209,25 @@ class IndexStore:
         ).fetchall()
         return [(chunk_id, vector_row) for chunk_id, vector_row in rows]
 
+    def read_chunk_rows(
+        self, conn: sqlite3.Connection
+    ) -> list[tuple[str, str, str | None, str, int]]:
+        """Every chunk as `(chunk_id, note_path, heading, text, vector_row)`.
+
+        The read half both retrieval legs share: the lexical leg scores
+        `text` directly (no FTS5 virtual table — the layout above is decided),
+        and the vector leg joins `vector_row` into `vectors.npy`. Ordered like
+        `ordered_chunk_ids` so a caller's iteration order is stable.
+        """
+        rows = conn.execute(
+            "SELECT chunk_id, note_path, heading, text, vector_row FROM chunks "
+            "ORDER BY note_path ASC, chunk_index ASC"
+        ).fetchall()
+        return [
+            (chunk_id, note_path, heading, text, vector_row)
+            for chunk_id, note_path, heading, text, vector_row in rows
+        ]
+
     def assign_vector_rows(self, conn: sqlite3.Connection, vector_rows: dict[str, int]) -> None:
         """Write a dense `vector_row` renumbering computed from `ordered_chunk_ids`."""
         with conn:
