@@ -153,7 +153,7 @@ def _run_golden(
         return ranked_notes
 
     report = golden.evaluate(golden.load_golden(args.file), search_notes)
-    print(json.dumps(report, default=lambda o: o.__dict__, indent=2))
+    print(_json_dump(report))
     if args.min_recall is not None and report.mean_recall < args.min_recall:
         print(
             f"golden gate FAILED: mean recall {report.mean_recall:.3f} < {args.min_recall:.3f}",

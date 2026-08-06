@@ -17,6 +17,7 @@ import pytest
 
 from ragmark.cli import VAULT_ENV, _build_parser, _json_dump, main
 from ragmark.embed import Embedder
+from ragmark.golden import GoldenQuery, GoldenReport, GoldenRow
 from ragmark.index import RefreshReport
 from ragmark.model import (
     ActivityEntry,
@@ -219,8 +220,19 @@ def test_index_verb_runs_and_prints_a_json_report(monkeypatch, capsys, make_vaul
             ),
         ),
         ActivityEntry(note_path="a.md", modified="2026-08-05", first_line="# A"),
+        GoldenReport(
+            rows=(
+                GoldenRow(
+                    query=GoldenQuery(text="q", expect=("a.md",), k=8),
+                    recall=1.0,
+                    found=("a.md",),
+                    missed=(),
+                ),
+            ),
+            mean_recall=1.0,
+        ),
     ],
-    ids=["refresh_report", "search_hit", "neighborhood", "activity_entry"],
+    ids=["refresh_report", "search_hit", "neighborhood", "activity_entry", "golden_report"],
 )
 def test_json_dump_handles_every_slots_result_type(result) -> None:
     """One helper serializes all four verbs, so none can regress alone.
@@ -234,3 +246,6 @@ def test_json_dump_handles_every_slots_result_type(result) -> None:
     if isinstance(result, Neighborhood):
         assert payload["neighbors"][0]["note_path"] == "b.md"
         assert payload["neighbors"][0]["included"] is True
+    if isinstance(result, GoldenReport):
+        assert payload["rows"][0]["query"]["text"] == "q"
+        assert payload["rows"][0]["found"] == ["a.md"]
