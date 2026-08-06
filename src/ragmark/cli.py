@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 from ragmark import activity, gaps, gate, golden, index, neighbors, search
@@ -30,6 +31,22 @@ from ragmark.embed import FastembedEmbedder
 from ragmark.store import IndexStore
 
 VAULT_ENV = "RAGMARK_VAULT"
+
+
+def _json_dump(result: object) -> str:
+    """Render an engine result as the JSON every verb prints.
+
+    Every result type is a `slots=True` dataclass, so it has no instance
+    `__dict__`; `asdict` is the supported accessor and recurses into nested
+    dataclasses (a `Neighborhood`'s `neighbors` tuple becomes plain dicts).
+    Tuples serialize as JSON arrays natively, so no `default=` hook is needed.
+    One helper for all four verbs so none can regress on its own.
+    """
+    if is_dataclass(result) and not isinstance(result, type):
+        return json.dumps(asdict(result), indent=2)
+    if isinstance(result, (list, tuple)):
+        return json.dumps([asdict(item) for item in result], indent=2)
+    return json.dumps(result, indent=2)
 
 
 def _resolve_vault(arg: str | None) -> Path:
@@ -88,21 +105,21 @@ def main() -> int:
     try:
         if args.command == "search":
             hits = search.search(args.query, args.k, config=config, store=store, embedder=embedder)
-            print(json.dumps([hit.__dict__ for hit in hits], indent=2))
+            print(_json_dump(hits))
         elif args.command == "read":
             print(gate.read_note(args.path, config))
         elif args.command == "neighbors":
             result = neighbors.vault_neighbors(args.path, args.depth, args.budget, config=config)
-            print(json.dumps(result, default=lambda o: o.__dict__, indent=2))
+            print(_json_dump(result))
         elif args.command == "recent":
             entries = activity.recent_activity(args.days, args.limit, config=config)
-            print(json.dumps([entry.__dict__ for entry in entries], indent=2))
+            print(_json_dump(entries))
         elif args.command == "golden":
             return _run_golden(args, config, store, embedder)
         elif args.command == "index":
             run = index.reindex if args.force else index.refresh
             report = run(config, store, embedder)
-            print(json.dumps(report.__dict__, default=list, indent=2))
+            print(_json_dump(report))
         elif args.command == "gaps":
             pairs = gaps.gaps(config=config, threshold=args.threshold)
             print(json.dumps(pairs, indent=2))
@@ -136,7 +153,7 @@ def _run_golden(
         return ranked_notes
 
     report = golden.evaluate(golden.load_golden(args.file), search_notes)
-    print(json.dumps(report, default=lambda o: o.__dict__, indent=2))
+    print(_json_dump(report))
     if args.min_recall is not None and report.mean_recall < args.min_recall:
         print(
             f"golden gate FAILED: mean recall {report.mean_recall:.3f} < {args.min_recall:.3f}",
