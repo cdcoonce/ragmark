@@ -20,6 +20,9 @@ venv/
 .afk/transcripts/
 .afk/worktrees/
 .afk/mailbox/
+# Shadow-parity ledgers (afk#1149/#1155): per-node legacy-vs-new decision records that
+# accumulate toward a LOCAL agreement bar. Machine-local by construction — never shared.
+.afk/parity/
 .afk/cycle.lock
 docs/dev-cycle/telemetry.jsonl
 docs/dev-cycle/last-run.md
