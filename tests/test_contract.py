@@ -59,11 +59,6 @@ def seed_config(tmp_path: Path) -> RagmarkConfig:
 
 
 @OWED
-def test_owed_neighbors(tmp_path: Path) -> None:
-    neighbors.vault_neighbors("a.md", config=seed_config(tmp_path))
-
-
-@OWED
 def test_owed_activity(tmp_path: Path) -> None:
     activity.recent_activity(config=seed_config(tmp_path))
 
@@ -73,7 +68,7 @@ def test_owed_gaps(tmp_path: Path) -> None:
     gaps.gaps(config=seed_config(tmp_path))
 
 
-def test_exactly_three_owed_behaviors_remain() -> None:
+def test_exactly_two_owed_behaviors_remain() -> None:
     """Guards the owed-xfail contract itself: each landing slice deletes its
     own `test_owed_*` marker, so the surviving count is a live check that no
     slice quietly dropped (or kept) one it shouldn't have."""
@@ -87,5 +82,4 @@ def test_exactly_three_owed_behaviors_remain() -> None:
     assert sorted(owed) == [
         "test_owed_activity",
         "test_owed_gaps",
-        "test_owed_neighbors",
     ]
