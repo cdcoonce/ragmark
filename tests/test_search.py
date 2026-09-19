@@ -292,3 +292,211 @@ def test_work_context_similar_notes_never_surfaces_a_personal_note(make_vault) -
 
     assert pairs
     assert all(path != PERSONAL_NOTE for path, _ in pairs)
+
+
+# --- relevance magnitude reaches fusion (the-vault#140 d4, follow-up) ---------
+#
+# Both legs computed a real relevance number and threw the magnitude away,
+# handing `_fuse` an ordered list of chunk_ids. Rank position then stood in for
+# relevance, because position was all fusion was given. These pin that the
+# magnitude survives the trip, and that a score-level mode can USE it.
+
+
+def test_vector_leg_carries_the_cosine_magnitude(tmp_path: Path) -> None:
+    """The vector leg reports cosine, not just an order."""
+    config = make_config(tmp_path)
+    write_note(config, "a.md", "# Kayaking\n\nKayaking kayaking kayaking.\n")
+    write_note(config, "b.md", "# Sourdough\n\nSourdough sourdough sourdough.\n")
+    store = IndexStore(config.index_dir)
+    embedder = StubEmbedder()
+    index.reindex(config, store, embedder)
+    rows = store.read_chunk_rows(store.connect())
+
+    scored = search._vector_leg("kayaking", rows, store, embedder, 8)
+
+    assert scored, "the vector leg returned nothing"
+    assert all(isinstance(entry, tuple) and len(entry) == 2 for entry in scored), (
+        "the vector leg still yields bare chunk_ids — the cosine is being dropped"
+    )
+    assert all(-1.0 <= score <= 1.0 for _chunk_id, score in scored)
+    # Descending by magnitude, and the top hit is a real cosine, not a rank.
+    assert [score for _chunk_id, score in scored] == sorted(
+        (score for _chunk_id, score in scored), reverse=True
+    )
+    assert scored[0][1] > 0.9
+
+
+def test_lexical_leg_carries_the_bm25_score(tmp_path: Path) -> None:
+    """The lexical leg reports its BM25 score, not just an order."""
+    config = make_config(tmp_path)
+    write_ranking_corpus(config)
+    store = IndexStore(config.index_dir)
+    embedder = StubEmbedder()
+    index.reindex(config, store, embedder)
+    rows = store.read_chunk_rows(store.connect())
+
+    scored = search._lexical_leg("trunk_branch", rows, 8)
+
+    assert scored, "the lexical leg returned nothing for an exact identifier"
+    assert all(isinstance(entry, tuple) and len(entry) == 2 for entry in scored), (
+        "the lexical leg still yields bare chunk_ids — the BM25 score is being dropped"
+    )
+    assert all(score > 0.0 for _chunk_id, score in scored)
+
+
+# One leg ranks [b, a, c], the other [a, b, c]. RRF sees rank 1 + rank 2 for
+# both a and b, ties them exactly, and resolves on chunk_id. The magnitudes say
+# they are not equivalent at all: b's lead in the first leg is enormous while
+# a's lead in the second is a rounding error.
+_TIED_ON_RANK_LEG_ONE = [("b", 0.95), ("a", 0.20), ("c", 0.19)]
+_TIED_ON_RANK_LEG_TWO = [("a", 5.00), ("b", 4.99), ("c", 4.98)]
+
+
+def test_rrf_ties_what_only_magnitude_can_separate() -> None:
+    """Positive control: RRF genuinely cannot tell a from b on this input.
+
+    Without this the score-fusion test below proves nothing — a fixture where
+    the two modes agree would pass either way.
+    """
+    fused = search._fuse(_TIED_ON_RANK_LEG_ONE, _TIED_ON_RANK_LEG_TWO, mode=search.Fusion.RRF)
+
+    assert fused["a"] == fused["b"], "fixture is not actually tied under RRF"
+    ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
+    assert ranked[0][0] == "a", "RRF resolves the tie alphabetically, on chunk_id"
+
+
+def test_score_fusion_separates_what_rrf_ties() -> None:
+    """Score fusion ranks on magnitude, so the tie resolves on evidence."""
+    fused = search._fuse(_TIED_ON_RANK_LEG_ONE, _TIED_ON_RANK_LEG_TWO, mode=search.Fusion.SCORE)
+
+    ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
+    assert ranked[0][0] == "b", (
+        "score fusion ignored the magnitudes: b dominates leg one outright while "
+        "a's edge in leg two is 0.01, so b must outrank a"
+    )
+    assert fused["b"] > fused["a"]
+
+
+def test_score_fusion_keeps_a_sole_leg_hit_at_full_weight() -> None:
+    """A leg with one hit has a zero-width range — it must not normalize to 0.
+
+    This is the exact-identifier case: `trunk_branch` matches exactly one
+    chunk, so the lexical leg returns a single entry. Mapping a degenerate
+    min==max range to 0.0 would silently delete the only leg that can see an
+    identifier, which is the whole reason that leg exists.
+    """
+    # b sits MID-pool in the first leg (so its own normalization is not the
+    # thing under test) and is the sole hit of the second.
+    fused = search._fuse(
+        [("a", 0.9), ("b", 0.5), ("c", 0.1)], [("b", 7.5)], mode=search.Fusion.SCORE
+    )
+
+    assert fused["b"] > 0.0, "the sole lexical hit normalized away to nothing"
+    assert fused["b"] == pytest.approx(1.5), "a zero-width leg must contribute full weight"
+    assert fused["b"] > fused["a"]
+
+
+# --- score fusion must not regress what the legs exist to protect -------------
+
+
+@pytest.mark.parametrize("identifier", ["trunk_branch", "afk#1089"])
+def test_exact_identifier_survives_score_fusion(tmp_path: Path, identifier: str) -> None:
+    """The decoy corpus is built to bury the target under raw vector magnitude."""
+    config = make_config(tmp_path)
+    write_ranking_corpus(config)
+    store = IndexStore(config.index_dir)
+
+    hits = search.search(
+        identifier,
+        8,
+        config=config,
+        store=store,
+        embedder=StubEmbedder(),
+        fusion=search.Fusion.SCORE,
+    )
+
+    assert TARGET_NOTE in {hit.note_path for hit in hits}
+
+
+def test_score_fusion_is_deterministic(tmp_path: Path) -> None:
+    """Same index, same query, same order AND same scores — as RRF already is."""
+    config = make_config(tmp_path)
+    write_ranking_corpus(config)
+    store = IndexStore(config.index_dir)
+    embedder = StubEmbedder()
+
+    first = search.search(
+        "trunk branch drill",
+        10,
+        config=config,
+        store=store,
+        embedder=embedder,
+        fusion=search.Fusion.SCORE,
+    )
+    second = search.search(
+        "trunk branch drill",
+        10,
+        config=config,
+        store=store,
+        embedder=embedder,
+        fusion=search.Fusion.SCORE,
+    )
+
+    assert [hit.chunk_id for hit in first] == [hit.chunk_id for hit in second]
+    assert [hit.score for hit in first] == [hit.score for hit in second]
+
+
+def test_the_fusion_argument_actually_reaches_fusion(tmp_path: Path) -> None:
+    """A mode that parses but changes nothing is the failure this catches.
+
+    Without it, `search()` could accept `fusion` and quietly always run RRF:
+    every other test here would still pass, because RRF also finds the target,
+    is also deterministic, and is also the default.
+    """
+    config = make_config(tmp_path)
+    write_ranking_corpus(config)
+    store = IndexStore(config.index_dir)
+    embedder = StubEmbedder()
+
+    by_rank = search.search(
+        "trunk branch drill",
+        10,
+        config=config,
+        store=store,
+        embedder=embedder,
+        fusion=search.Fusion.RRF,
+    )
+    by_score = search.search(
+        "trunk branch drill",
+        10,
+        config=config,
+        store=store,
+        embedder=embedder,
+        fusion=search.Fusion.SCORE,
+    )
+
+    assert by_rank and by_score
+    assert [hit.score for hit in by_rank] != [hit.score for hit in by_score], (
+        "both modes produced identical scores — the fusion argument is inert"
+    )
+
+
+def test_rrf_remains_the_default(tmp_path: Path) -> None:
+    """Decided behavior: the shipped default stays reciprocal rank fusion."""
+    config = make_config(tmp_path)
+    write_ranking_corpus(config)
+    store = IndexStore(config.index_dir)
+    embedder = StubEmbedder()
+
+    default = search.search("trunk branch drill", 10, config=config, store=store, embedder=embedder)
+    explicit = search.search(
+        "trunk branch drill",
+        10,
+        config=config,
+        store=store,
+        embedder=embedder,
+        fusion=search.Fusion.RRF,
+    )
+
+    assert [hit.chunk_id for hit in default] == [hit.chunk_id for hit in explicit]
+    assert [hit.score for hit in default] == [hit.score for hit in explicit]

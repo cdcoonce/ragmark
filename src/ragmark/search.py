@@ -28,9 +28,19 @@ How the two legs meet:
   `[a-z0-9_#/.-]+`, no stemming and no stopwords, so `trunk_branch` and
   `afk#1089` each survive as ONE token. A `\\w+` tokenizer splits `afk#1089`
   and silently defeats the feature.
-- Fusion is **reciprocal rank fusion** (`RRF_K`), legs equal-weighted, on
-  1-based ranks; a chunk missing from a leg contributes nothing from that leg.
-  Ordering breaks ties on `chunk_id` so a run is reproducible across machines.
+- Each leg reports its own relevance MAGNITUDE (cosine, BM25) alongside the
+  chunk id, so fusion is given evidence rather than only position. Two modes
+  consume it, chosen by the `fusion` argument:
+  - `Fusion.RRF` (the DEFAULT, and the decided behavior): reciprocal rank
+    fusion (`RRF_K`), legs equal-weighted, on 1-based ranks. Magnitude is
+    deliberately unused — RRF's whole point is that it needs no calibration
+    between two incommensurable scales.
+  - `Fusion.SCORE`: CombSUM — each leg min-max normalized over the fetched
+    candidate pool, then summed equal-weighted. It can separate candidates RRF
+    ties, at the cost of depending on the pool's own min and max.
+  In BOTH modes a chunk missing from a leg contributes nothing from that leg,
+  and ordering breaks ties on `chunk_id` so a run is reproducible across
+  machines.
 - Gating runs LAST, over the fused candidates, through `gate.filter_visible`.
   If gating leaves fewer than `k` hits the result comes back SHORT: refilling
   from a wider fetch would make the result count a function of hidden
@@ -42,6 +52,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from enum import StrEnum
 from typing import Any
 
 from ragmark import gate, index
@@ -57,6 +68,19 @@ OVERFETCH = 4
 # Reciprocal rank fusion's damping constant (Cormack et al.'s 60): large
 # enough that the top of one leg cannot bulldoze the other leg entirely.
 RRF_K = 60
+
+
+class Fusion(StrEnum):
+    """How the two legs' candidates are combined.
+
+    `RRF` is the default and the decided behavior (the-vault#140 d4). `SCORE`
+    is the measured alternative: it exists because both legs compute a real
+    relevance magnitude, and fusing on rank alone discards it.
+    """
+
+    RRF = "rrf"
+    SCORE = "score"
+
 
 # BM25 saturation and length-normalization, the decided values.
 BM25_K1 = 1.2
@@ -74,6 +98,7 @@ def search(
     config: RagmarkConfig,
     store: IndexStore,
     embedder: Embedder,
+    fusion: Fusion = Fusion.RRF,
 ) -> list[SearchHit]:
     """Hybrid search returning up to *k* context-visible chunk hits.
 
@@ -86,6 +111,12 @@ def search(
     `MAX_RESULTS * OVERFETCH` per leg however large a `k` the caller asks for,
     and an out-of-range `k` is clamped silently rather than rejected. An
     incoherent index raises `IndexCorruptionError` from the refresh.
+
+    `fusion` selects how the legs combine. It defaults to `Fusion.RRF`, the
+    decided behavior; `Fusion.SCORE` is the alternative that spends the legs'
+    real magnitudes. `SearchHit.score` is the FUSED score either way, so its
+    scale is a function of this argument and is comparable only within one
+    result set — it is not a calibrated relevance.
     """
     index.refresh(config, store, embedder)
 
@@ -102,6 +133,7 @@ def search(
     fused = _fuse(
         _vector_leg(query, rows, store, embedder, limit),
         _lexical_leg(query, rows, limit),
+        mode=fusion,
     )
     ranked = sorted(fused.items(), key=lambda item: (-item[1], item[0]))
 
@@ -217,8 +249,12 @@ def _vector_leg(
     store: IndexStore,
     embedder: Embedder,
     limit: int,
-) -> list[str]:
-    """Top-*limit* `chunk_id`s by cosine, brute force over the full matrix."""
+) -> list[tuple[str, float]]:
+    """Top-*limit* `(chunk_id, cosine)` pairs, brute force over the full matrix.
+
+    The cosine travels WITH the id: fusion cannot weigh evidence it is not
+    given, and rank position is a lossy stand-in for a similarity.
+    """
     import numpy as np
 
     matrix = store.load_vectors()
@@ -243,11 +279,11 @@ def _vector_leg(
         scored.append((-similarity, chunk_id))
 
     scored.sort()
-    return [chunk_id for _score, chunk_id in scored[:limit]]
+    return [(chunk_id, -negated) for negated, chunk_id in scored[:limit]]
 
 
-def _lexical_leg(query: str, rows: list[_ChunkRow], limit: int) -> list[str]:
-    """Top-*limit* `chunk_id`s by BM25 over `chunks.text`, pure Python.
+def _lexical_leg(query: str, rows: list[_ChunkRow], limit: int) -> list[tuple[str, float]]:
+    """Top-*limit* `(chunk_id, bm25)` pairs over `chunks.text`, pure Python.
 
     Each chunk row is one document, so corpus statistics (document frequency,
     average length) are per CHUNK. Only chunks a query term actually hits are
@@ -287,13 +323,57 @@ def _lexical_leg(query: str, rows: list[_ChunkRow], limit: int) -> list[str]:
             scored.append((-score, chunk_id))
 
     scored.sort()
-    return [chunk_id for _score, chunk_id in scored[:limit]]
+    return [(chunk_id, -negated) for negated, chunk_id in scored[:limit]]
 
 
-def _fuse(*legs: list[str]) -> dict[str, float]:
-    """Reciprocal rank fusion over 1-based ranks, legs equal-weighted."""
+def _fuse(*legs: list[tuple[str, float]], mode: Fusion = Fusion.RRF) -> dict[str, float]:
+    """Combine ranked, scored legs into one candidate->score map."""
+    if mode is Fusion.SCORE:
+        return _fuse_by_score(legs)
+    return _fuse_by_rank(legs)
+
+
+def _fuse_by_rank(legs: tuple[list[tuple[str, float]], ...]) -> dict[str, float]:
+    """Reciprocal rank fusion over 1-based ranks, legs equal-weighted.
+
+    Magnitude is ignored ON PURPOSE: cosine and BM25 live on incommensurable
+    scales, and RRF's value is that it never has to reconcile them.
+    """
     fused: dict[str, float] = {}
     for leg in legs:
-        for rank, chunk_id in enumerate(leg, start=1):
+        for rank, (chunk_id, _score) in enumerate(leg, start=1):
             fused[chunk_id] = fused.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
     return fused
+
+
+def _fuse_by_score(legs: tuple[list[tuple[str, float]], ...]) -> dict[str, float]:
+    """CombSUM: min-max each leg over the fetched pool, then sum.
+
+    Two properties are load-bearing and neither is free:
+
+    - A leg whose scores are all equal (notably a leg with ONE hit, which is
+      exactly what an exact-identifier query produces) has a zero-width range.
+      Every member normalizes to 1.0, not 0.0 — mapping it to 0.0 would delete
+      the only leg that can see `afk#1089`, which is the reason that leg exists.
+    - Normalization is over the OVER-FETCHED POOL, not the corpus, so the
+      bottom of a leg lands on 0.0 and is therefore indistinguishable from
+      being absent. That is CombSUM's known cost: it reads relative standing
+      within the pool, not calibrated absolute relevance.
+    """
+    fused: dict[str, float] = {}
+    for leg in legs:
+        for chunk_id, score in _normalize(leg).items():
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + score
+    return fused
+
+
+def _normalize(leg: list[tuple[str, float]]) -> dict[str, float]:
+    """Min-max a single leg onto [0, 1]; a zero-width range maps to 1.0."""
+    if not leg:
+        return {}
+    scores = [score for _chunk_id, score in leg]
+    low = min(scores)
+    span = max(scores) - low
+    if span <= 0.0:
+        return {chunk_id: 1.0 for chunk_id, _score in leg}
+    return {chunk_id: (score - low) / span for chunk_id, score in leg}
