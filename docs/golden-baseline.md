@@ -95,8 +95,11 @@ candidate reproducing queries in the oracle's own defect-ratchet sense:
 - `asset management reporting tool snowflake` → **0.00** under RRF. The note
   exists at `work/active/amrt/asset-management-reporting-tool.md`. Transcript
   provenance (a real query Charles ran). Score fusion recovers it to 1.00.
-- `afk#1105` → **0.00** under both. A bare identifier query, which is precisely
-  what the lexical leg was built for — worth its own investigation.
+- `afk#1105` → **0.00** under both. Investigated: **not a retrieval defect.** The
+  expect note has never contained that literal string (`git log -S` confirms); it
+  cites the issue as a URL and as `#1105`. The entry was unsatisfiable, so no
+  fusion mode could ever score it. Corrected in the golden set to `#1105`, which
+  retrieves the note at rank 1. Its old provenance comment was factually wrong.
 - `autonomous agents that fix bugs by themselves overnight` → 0.33 under RRF,
   0.00 under score fusion. The only query score fusion made worse.
 - `how should agents share memory across repositories` → 0.33 under RRF.
@@ -111,3 +114,21 @@ ragmark golden --vault /path/to/the-vault \
   --file /path/to/the-vault/.claude/ragmark/golden.toml \
   --fusion rrf     # or: score
 ```
+
+## Follow-ups from this run
+
+Investigating the `afk#1105` miss exposed a defect in the lexical leg's tokenizer:
+`_TOKEN_RE` includes `.`, so a sentence-final word keeps its period and
+`retryability.` never matches `retryability`. This strands **47,690 occurrences
+across 7,794 distinct words — 3.8% of all corpus tokens** — and also welds whole
+URLs into one token. Filed as #118, with the important negative result recorded
+there: the obvious edge-stripping fix scores **worse** on this oracle
+(0.7778 → 0.7611), because merging `work.` into `work` redistributes IDF. The set
+simply could not see the benefit — no query hit a sentence-final term.
+
+The golden set has since been amended (a reproducer for that defect, plus the
+`#1105` correction), making it 31 entries with an RRF baseline of **0.7849**. The
+A/B headline above is deliberately left on the **pre-amendment 30-entry set** it was
+actually measured against — grading this PR with an oracle edited during this work
+is exactly what the executor-untouchable rule exists to prevent. The four stale
+expect-paths remain untouched and still need a human decision.
