@@ -60,6 +60,23 @@ def _resolve_vault(arg: str | None) -> Path:
     raise SystemExit(2)
 
 
+def _add_fusion_flag(parser: argparse.ArgumentParser) -> None:
+    """Expose the leg-fusion mode, defaulting to the decided behavior.
+
+    Selectable because the golden oracle is the only thing that can compare
+    the two modes, and the oracle is driven from this surface. The MCP face
+    deliberately does NOT expose it: that face is a pinned contract, and its
+    behavior stays the default.
+    """
+    parser.add_argument(
+        "--fusion",
+        type=search.Fusion,
+        choices=list(search.Fusion),
+        default=search.Fusion.RRF,
+        help="how the vector and lexical legs combine (default: rrf)",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ragmark", description=__doc__)
     parser.add_argument("--vault", help=f"vault root (or ${VAULT_ENV})")
@@ -68,6 +85,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_search = sub.add_parser("search", help="hybrid chunk search")
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=search.DEFAULT_RESULTS)
+    _add_fusion_flag(p_search)
 
     p_read = sub.add_parser("read", help="print one note")
     p_read.add_argument("path")
@@ -84,6 +102,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_golden = sub.add_parser("golden", help="run the golden-query harness")
     p_golden.add_argument("--file", required=True, type=Path)
     p_golden.add_argument("--min-recall", type=float, default=None)
+    _add_fusion_flag(p_golden)
 
     p_index = sub.add_parser("index", help="build/refresh the derived index (CLI-only)")
     p_index.add_argument("--force", action="store_true", help="full rebuild")
@@ -104,7 +123,14 @@ def main() -> int:
 
     try:
         if args.command == "search":
-            hits = search.search(args.query, args.k, config=config, store=store, embedder=embedder)
+            hits = search.search(
+                args.query,
+                args.k,
+                config=config,
+                store=store,
+                embedder=embedder,
+                fusion=args.fusion,
+            )
             print(_json_dump(hits))
         elif args.command == "read":
             print(gate.read_note(args.path, config))
@@ -145,7 +171,9 @@ def _run_golden(
     """Evaluate the golden set against live search; gate on --min-recall."""
 
     def search_notes(query: str, k: int) -> list[str]:
-        hits = search.search(query, k, config=config, store=store, embedder=embedder)
+        hits = search.search(
+            query, k, config=config, store=store, embedder=embedder, fusion=args.fusion
+        )
         ranked_notes: list[str] = []
         for hit in hits:
             if hit.note_path not in ranked_notes:

@@ -145,6 +145,54 @@ def test_golden_parser_arguments() -> None:
     assert args.min_recall is None
 
 
+# The fusion mode is selectable from the CLI because the golden oracle is the
+# only way to compare the two, and it is driven from here. RRF stays the
+# default on every verb — the alternative is opt-in, never implicit.
+
+
+def test_search_parser_defaults_to_rrf_fusion() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["search", "hello"])
+    assert args.fusion == search.Fusion.RRF
+
+
+def test_golden_parser_defaults_to_rrf_fusion() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["golden", "--file", "golden.toml"])
+    assert args.fusion == search.Fusion.RRF
+
+
+@pytest.mark.parametrize("verb", [["search", "hello"], ["golden", "--file", "g.toml"]])
+def test_fusion_mode_is_selectable(verb: list[str]) -> None:
+    parser = _build_parser()
+    args = parser.parse_args([*verb, "--fusion", "score"])
+    assert args.fusion == search.Fusion.SCORE
+
+
+def test_golden_passes_the_fusion_mode_into_search(monkeypatch) -> None:
+    """The flag must reach `search.search`, not just be parsed and dropped."""
+    import argparse
+    from pathlib import Path
+
+    from ragmark import cli, golden
+
+    seen: list[object] = []
+
+    def fake_search(query, k, *, config, store, embedder, fusion):
+        seen.append(fusion)
+        return []
+
+    monkeypatch.setattr(cli.search, "search", fake_search)
+    monkeypatch.setattr(
+        golden, "load_golden", lambda path: [golden.GoldenQuery(text="q", expect=("a.md",), k=8)]
+    )
+
+    args = argparse.Namespace(file=Path("g.toml"), min_recall=None, fusion=search.Fusion.SCORE)
+    cli._run_golden(args, object(), object(), object())
+
+    assert seen == [search.Fusion.SCORE]
+
+
 def test_index_parser_arguments() -> None:
     parser = _build_parser()
     args = parser.parse_args(["index"])
