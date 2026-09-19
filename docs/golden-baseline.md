@@ -106,14 +106,45 @@ candidate reproducing queries in the oracle's own defect-ratchet sense:
 
 ## Reproducing
 
-The index is built to a scratch dir on purpose: `<vault>/.ragmark` is untracked
-but NOT gitignored in the-vault, and that vault auto-commits.
+**Run against the live vault.** An earlier draft of this section said the index had
+to go to a scratch dir because `<vault>/.ragmark` is untracked but not gitignored in
+a vault that auto-commits. That was already false when it was written: the-vault
+added `.ragmark/` to `.gitignore` in `57f74e83` at 12:11:23, thirteen minutes before
+this file was first committed. It is also unactionable — there is no `--index-path`
+flag, and the CLI never calls `RagmarkConfig.from_toml`, so `index_dir` is always
+`<vault>/.ragmark`.
+
+This matters for cost. `index.refresh()` is mtime-gated and incremental, so the full
+build over ~13k chunks is paid **once, ever**, and each arm costs **~22s** after.
+Do not delete `<vault>/.ragmark` between runs; building into a throwaway directory
+pays the full build every time for no benefit.
 
 ```
 ragmark golden --vault /path/to/the-vault \
   --file /path/to/the-vault/.claude/ragmark/golden.toml \
   --fusion rrf     # or: score
 ```
+
+### What those two commands do NOT reproduce
+
+They reproduce the **arms**, not the **method**. The A-B-A ordering, the index-stability
+check that caught the mid-run re-embed, the pairing of per-query rows across arms, and
+the exact sign test were all done by a harness written to a session scratchpad, which is
+gone. Nothing in this repo runs them today. #87 (a paired per-query regression diff
+between two saved `GoldenReport` JSONs) is the missing in-repo half; until it lands,
+re-deriving the comparison means re-deriving that machinery.
+
+Two further caveats for anyone re-running this:
+
+- **The numbers above are not pinned and are not re-derivable from today's inputs.**
+  `GoldenReport` carries no provenance — no vault revision, no oracle revision, no model
+  or `k`. The headline was measured against the golden file as of blob `559407e9` (30
+  entries, the parent of the-vault's amendment commit `e4e94f90`); the file is now 31
+  entries. The corpus was the-vault's working tree at 955 notes / 12,971 chunks on
+  2026-09-19, and that vault moves continuously.
+- **A re-baseline after the four stale paths are repointed will differ from 0.7778 for
+  three reasons at once** — repointed paths, the added 31st entry, and corpus growth —
+  with nothing in the output to attribute the delta between them.
 
 ## Follow-ups from this run
 
