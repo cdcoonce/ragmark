@@ -27,6 +27,7 @@ from ragmark.model import (
     Neighborhood,
     SearchHit,
 )
+from ragmark.store import IndexStore
 
 
 def test_no_vault_exits_2_with_message(monkeypatch, capsys) -> None:
@@ -169,10 +170,14 @@ def test_fusion_mode_is_selectable(verb: list[str]) -> None:
     assert args.fusion == search.Fusion.SCORE
 
 
-def test_golden_passes_the_fusion_mode_into_search(monkeypatch) -> None:
-    """The flag must reach `search.search`, not just be parsed and dropped."""
+def test_golden_passes_the_fusion_mode_into_search(monkeypatch, tmp_path, make_vault) -> None:
+    """The flag must reach `search.search`, not just be parsed and dropped.
+
+    Provenance gathering (issue #120) runs after `evaluate`, so this needs a
+    real config/store/embedder and an oracle file that exists on disk — bare
+    `object()` sentinels don't survive `store.connect()` or `args.file.read_bytes()`.
+    """
     import argparse
-    from pathlib import Path
 
     from ragmark import cli, golden
 
@@ -187,8 +192,13 @@ def test_golden_passes_the_fusion_mode_into_search(monkeypatch) -> None:
         golden, "load_golden", lambda path: [golden.GoldenQuery(text="q", expect=("a.md",), k=8)]
     )
 
-    args = argparse.Namespace(file=Path("g.toml"), min_recall=None, fusion=search.Fusion.SCORE)
-    cli._run_golden(args, object(), object(), object())
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text("[[query]]\ntext = 'q'\nexpect = ['a.md']\n", encoding="utf-8")
+    args = argparse.Namespace(file=oracle_file, min_recall=None, fusion=search.Fusion.SCORE)
+    cli._run_golden(args, config, store, embedder)
 
     assert seen == [search.Fusion.SCORE]
 
@@ -256,6 +266,177 @@ def test_index_verb_runs_and_prints_a_json_report(monkeypatch, capsys, make_vaul
     assert set(report) == {"added", "updated", "removed", "unchanged", "defects"}
     assert report["added"] > 0
     assert report["defects"] == []
+
+
+_GOLDEN_ORACLE = (
+    "[[query]]\n"
+    "text = 'branch protection'\n"
+    "expect = ['work/decisions/platform-choice.md']\n"
+    "\n"
+    "[[query]]\n"
+    "text = 'side project notes'\n"
+    "expect = ['personal/projects/side-project.md']\n"
+)
+
+
+def test_golden_verb_records_provenance(monkeypatch, capsys, make_vault, tmp_path) -> None:
+    """The `golden` verb's saved JSON is attributable to its inputs (issue #120)."""
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ragmark",
+            "--vault",
+            str(config.vault_root),
+            "golden",
+            "--file",
+            str(oracle_file),
+            "--fusion",
+            "score",
+        ],
+    )
+
+    exit_code = main()
+
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert exit_code == 0
+
+    report = json.loads(captured.out)
+    provenance = report["provenance"]
+
+    store = IndexStore(config.index_dir)
+    conn = store.connect()
+    try:
+        expected_chunk_count = store.chunk_count(conn)
+        expected_note_count = len(store.read_notes(conn))
+    finally:
+        conn.close()
+    assert expected_chunk_count > 0
+    assert expected_note_count > 0
+
+    assert provenance["chunk_count"] == expected_chunk_count
+    assert provenance["note_count"] == expected_note_count
+    assert provenance["query_count"] == 2
+    assert provenance["model_name"] == "stub"
+    assert provenance["model_dim"] == _STUB_DIM
+    assert provenance["model_version"] == "1"
+    assert provenance["fusion"] == "score"
+
+
+def test_golden_oracle_sha256_is_stable_and_changes_with_content(
+    monkeypatch, capsys, make_vault, tmp_path
+) -> None:
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+
+    def run_golden() -> dict:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+        )
+        main()
+        return json.loads(capsys.readouterr().out)
+
+    first = run_golden()
+    second = run_golden()
+    assert first["provenance"]["oracle_sha256"] == second["provenance"]["oracle_sha256"]
+
+    oracle_file.write_text(_GOLDEN_ORACLE + "\n# a comment appended\n", encoding="utf-8")
+    third = run_golden()
+    assert third["provenance"]["oracle_sha256"] != first["provenance"]["oracle_sha256"]
+
+
+def test_golden_provenance_vault_git_state_absent_outside_a_repo(
+    monkeypatch, capsys, make_vault, tmp_path
+) -> None:
+    """`make_vault` copies a fixture into a plain tmp dir, not a git work tree."""
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    exit_code = main()
+
+    assert exit_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["provenance"]["vault_revision"] is None
+    assert report["provenance"]["vault_dirty"] is None
+
+
+def test_golden_provenance_vault_git_state_present_inside_a_repo(
+    monkeypatch, capsys, make_vault, tmp_path
+) -> None:
+    """Explicit committer identity so the commit never depends on ambient git config."""
+    import subprocess
+
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    vault_root = config.vault_root
+    (vault_root / ".gitignore").write_text(".ragmark/\n", encoding="utf-8")
+    git_commit = [
+        "git",
+        "-c",
+        "user.name=Test User",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "initial",
+    ]
+    subprocess.run(["git", "init"], cwd=vault_root, check=True, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=vault_root, check=True, capture_output=True)
+    subprocess.run(git_commit, cwd=vault_root, check=True, capture_output=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=vault_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    main()
+    clean_report = json.loads(capsys.readouterr().out)
+    assert clean_report["provenance"]["vault_revision"] == head
+    assert clean_report["provenance"]["vault_dirty"] is False
+
+    (vault_root / "work" / "decisions" / "platform-choice.md").write_text(
+        "dirtied for the test\n", encoding="utf-8"
+    )
+    main()
+    dirty_report = json.loads(capsys.readouterr().out)
+    assert dirty_report["provenance"]["vault_revision"] == head
+    assert dirty_report["provenance"]["vault_dirty"] is True
 
 
 @pytest.mark.parametrize(
