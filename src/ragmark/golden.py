@@ -61,10 +61,19 @@ class GoldenReport:
     mean_recall: float
 
 
-def load_golden(path: Path) -> list[GoldenQuery]:
-    """Load and validate a golden-query file."""
+def load_golden(path: Path, vault_root: Path | None = None) -> list[GoldenQuery]:
+    """Load and validate a golden-query file.
+
+    If *vault_root* is given, every 'expect' path is additionally checked to
+    resolve to an existing file under it, failing fast on the first offending
+    entry (query order, then 'expect' order). Without *vault_root*, existence
+    is not checked — today's behavior.
+    """
     if not path.exists():
         raise FileNotFoundError(f"golden file not found: {path}")
+    if vault_root is not None and not vault_root.exists():
+        raise ValueError(f"vault_root not found: {vault_root}")
+    resolved_root = vault_root.resolve() if vault_root is not None else None
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     entries = data.get("query")
     if not isinstance(entries, list) or not entries:
@@ -81,6 +90,20 @@ def load_golden(path: Path) -> list[GoldenQuery]:
             raise ValueError(f"query #{position}: 'expect' must be a non-empty list of paths")
         if not isinstance(k, int) or k <= 0:
             raise ValueError(f"query #{position}: 'k' must be a positive integer")
+        if resolved_root is not None:
+            for expect_path in expect:
+                prefix = f"query #{position}: 'expect' path {expect_path!r}"
+                if not isinstance(expect_path, str):
+                    raise ValueError(f"{prefix} must be a string")
+                if Path(expect_path).is_absolute():
+                    raise ValueError(f"{prefix} must be relative to vault_root")
+                candidate = (resolved_root / expect_path).resolve()
+                try:
+                    candidate.relative_to(resolved_root)
+                except ValueError:
+                    raise ValueError(f"{prefix} escapes vault_root") from None
+                if not candidate.is_file():
+                    raise ValueError(f"{prefix} does not exist under vault_root")
         queries.append(GoldenQuery(text=text.strip(), expect=tuple(expect), k=k))
     return queries
 
