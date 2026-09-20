@@ -54,6 +54,16 @@ class GoldenRow:
 
 
 @dataclass(frozen=True, slots=True)
+class GoldenRegression:
+    """One query's recall change between a baseline and current report."""
+
+    query: str
+    baseline_recall: float
+    current_recall: float
+    delta: float
+
+
+@dataclass(frozen=True, slots=True)
 class GoldenProvenance:
     """The inputs a saved report was measured against — attribution, not math.
 
@@ -158,3 +168,28 @@ def evaluate(
         )
     mean = sum(r.recall for r in rows) / len(rows) if rows else 0.0
     return GoldenReport(rows=tuple(rows), mean_recall=mean)
+
+
+def diff_reports(baseline: GoldenReport, current: GoldenReport) -> tuple[GoldenRegression, ...]:
+    """Pair rows from *baseline* and *current* by query text.
+
+    One `GoldenRegression` per query present in both reports, in
+    `baseline.rows` order. Queries present in only one report are excluded.
+    Includes improvements and unchanged queries, not only regressions —
+    callers filter for `delta < 0` themselves.
+    """
+    current_by_query = {row.query: row for row in current.rows}
+    regressions: list[GoldenRegression] = []
+    for baseline_row in baseline.rows:
+        current_row = current_by_query.get(baseline_row.query)
+        if current_row is None:
+            continue
+        regressions.append(
+            GoldenRegression(
+                query=baseline_row.query,
+                baseline_recall=baseline_row.recall,
+                current_recall=current_row.recall,
+                delta=current_row.recall - baseline_row.recall,
+            )
+        )
+    return tuple(regressions)

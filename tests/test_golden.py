@@ -119,3 +119,42 @@ expect = ["reference/does-not-exist.md"]
 
     queries = golden.load_golden(golden_path)
     assert queries[0].expect == ("reference/does-not-exist.md",)
+
+
+def _row(query: str, recall: float) -> golden.GoldenRow:
+    return golden.GoldenRow(query=query, recall=recall, found=(), missed=())
+
+
+def test_diff_reports_pairs_shared_queries_in_baseline_order() -> None:
+    baseline = golden.GoldenReport(
+        rows=(
+            _row("alpha", 0.5),
+            _row("bravo", 1.0),
+            _row("charlie", 0.25),
+            _row("baseline-only", 0.75),
+        ),
+        mean_recall=0.625,
+    )
+    current = golden.GoldenReport(
+        rows=(
+            _row("charlie", 0.0),
+            _row("bravo", 1.0),
+            _row("alpha", 0.75),
+            _row("current-only", 0.5),
+        ),
+        mean_recall=0.583,
+    )
+
+    result = golden.diff_reports(baseline, current)
+
+    assert [r.query for r in result] == ["alpha", "bravo", "charlie"]
+    assert result[0] == golden.GoldenRegression(
+        query="alpha", baseline_recall=0.5, current_recall=0.75, delta=0.25
+    )
+    assert result[1] == golden.GoldenRegression(
+        query="bravo", baseline_recall=1.0, current_recall=1.0, delta=0.0
+    )
+    assert result[2] == golden.GoldenRegression(
+        query="charlie", baseline_recall=0.25, current_recall=0.0, delta=-0.25
+    )
+    assert not any(r.query in ("baseline-only", "current-only") for r in result)
