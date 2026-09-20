@@ -54,11 +54,35 @@ class GoldenRow:
 
 
 @dataclass(frozen=True, slots=True)
+class GoldenProvenance:
+    """The inputs a saved report was measured against — attribution, not math.
+
+    `evaluate` never constructs this; the CLI gathers the values (oracle
+    bytes, corpus counts, model identity, vault git state) and attaches it,
+    per the module's FORMAT/MATH-vs-gathering split.
+    """
+
+    oracle_path: str
+    oracle_sha256: str
+    query_count: int
+    vault_revision: str | None
+    vault_dirty: bool | None
+    note_count: int
+    chunk_count: int
+    model_name: str
+    model_dim: int
+    model_version: str
+    fusion: str
+    ragmark_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GoldenReport:
     """Aggregate evaluation of a golden set."""
 
     rows: tuple[GoldenRow, ...]
     mean_recall: float
+    provenance: GoldenProvenance | None = None
 
 
 def load_golden(path: Path) -> list[GoldenQuery]:

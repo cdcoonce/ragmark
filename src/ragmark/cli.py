@@ -19,10 +19,13 @@ not-yet-implemented (a seed stub reached before its build slice landed).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import os
+import subprocess
 import sys
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 
 from ragmark import activity, gaps, gate, golden, index, neighbors, search
@@ -162,6 +165,72 @@ def main() -> int:
     return 0
 
 
+def _git_output(args: list[str], cwd: Path) -> str | None:
+    """Run a git command in *cwd*; `None` on any failure, never a raise.
+
+    Covers a missing `git` binary, a non-zero exit, and a non-repo directory
+    alike — the two provenance git lookups are best-effort only.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _vault_git_state(vault_root: Path) -> tuple[str | None, bool | None]:
+    """`(vault_revision, vault_dirty)` — both `None` when not a git work tree."""
+    head = _git_output(["rev-parse", "HEAD"], vault_root)
+    if head is None:
+        return None, None
+    status = _git_output(["status", "--porcelain"], vault_root)
+    dirty = bool(status.strip()) if status is not None else None
+    return head.strip(), dirty
+
+
+def _gather_golden_provenance(
+    args: argparse.Namespace,
+    config: RagmarkConfig,
+    store: IndexStore,
+    embedder: FastembedEmbedder,
+    query_count: int,
+) -> golden.GoldenProvenance:
+    """The measurement's inputs, gathered after the search path has already
+    run (so the index dir and schema `store.connect()` creates are the ones
+    search itself just used, not a premature empty one)."""
+    oracle_bytes = args.file.read_bytes()
+    conn = store.connect()
+    try:
+        note_count = len(store.read_notes(conn))
+        chunk_count = store.chunk_count(conn)
+    finally:
+        conn.close()
+    identity = embedder.identity()
+    try:
+        ragmark_version = importlib.metadata.version("ragmark")
+    except importlib.metadata.PackageNotFoundError:
+        ragmark_version = None
+    vault_revision, vault_dirty = _vault_git_state(config.vault_root)
+    return golden.GoldenProvenance(
+        oracle_path=args.file.name,
+        oracle_sha256=hashlib.sha256(oracle_bytes).hexdigest(),
+        query_count=query_count,
+        vault_revision=vault_revision,
+        vault_dirty=vault_dirty,
+        note_count=note_count,
+        chunk_count=chunk_count,
+        model_name=identity.name,
+        model_dim=identity.dim,
+        model_version=identity.version,
+        fusion=args.fusion.value,
+        ragmark_version=ragmark_version,
+    )
+
+
 def _run_golden(
     args: argparse.Namespace,
     config: RagmarkConfig,
@@ -180,7 +249,10 @@ def _run_golden(
                 ranked_notes.append(hit.note_path)
         return ranked_notes
 
-    report = golden.evaluate(golden.load_golden(args.file), search_notes)
+    queries = golden.load_golden(args.file)
+    report = golden.evaluate(queries, search_notes)
+    provenance = _gather_golden_provenance(args, config, store, embedder, len(queries))
+    report = replace(report, provenance=provenance)
     print(_json_dump(report))
     if args.min_recall is not None and report.mean_recall < args.min_recall:
         print(
