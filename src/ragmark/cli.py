@@ -19,10 +19,13 @@ not-yet-implemented (a seed stub reached before its build slice landed).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import os
+import subprocess
 import sys
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 
 from ragmark import activity, gaps, gate, golden, index, neighbors, search
@@ -162,13 +165,96 @@ def main() -> int:
     return 0
 
 
+def _git_output(args: list[str], cwd: Path) -> str | None:
+    """Run a git command in *cwd*; `None` on any failure, never a raise.
+
+    Covers a missing `git` binary, a non-zero exit, and a non-repo directory
+    alike — the two provenance git lookups are best-effort only.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _vault_git_state(vault_root: Path) -> tuple[str | None, bool | None]:
+    """`(vault_revision, vault_dirty)` — both `None` when not a git work tree."""
+    head = _git_output(["rev-parse", "HEAD"], vault_root)
+    if head is None:
+        return None, None
+    status = _git_output(["status", "--porcelain"], vault_root)
+    dirty = bool(status.strip()) if status is not None else None
+    return head.strip(), dirty
+
+
+def _gather_golden_provenance(
+    args: argparse.Namespace,
+    config: RagmarkConfig,
+    store: IndexStore,
+    embedder: FastembedEmbedder,
+    query_count: int,
+) -> golden.GoldenProvenance:
+    """The measurement's inputs, gathered after the search path has already
+    run (so the index dir and schema `store.connect()` creates are the ones
+    search itself just used, not a premature empty one)."""
+    oracle_bytes = args.file.read_bytes()
+    conn = store.connect()
+    try:
+        note_count = len(store.read_notes(conn))
+        chunk_count = store.chunk_count(conn)
+    finally:
+        conn.close()
+    identity = embedder.identity()
+    try:
+        ragmark_version = importlib.metadata.version("ragmark")
+    except importlib.metadata.PackageNotFoundError:
+        ragmark_version = None
+    vault_revision, vault_dirty = _vault_git_state(config.vault_root)
+    return golden.GoldenProvenance(
+        oracle_path=args.file.name,
+        oracle_sha256=hashlib.sha256(oracle_bytes).hexdigest(),
+        query_count=query_count,
+        vault_revision=vault_revision,
+        vault_dirty=vault_dirty,
+        note_count=note_count,
+        chunk_count=chunk_count,
+        model_name=identity.name,
+        model_dim=identity.dim,
+        model_version=identity.version,
+        fusion=args.fusion.value,
+        ragmark_version=ragmark_version,
+    )
+
+
+def _corpus_fingerprint(store: IndexStore) -> tuple[int, int]:
+    """`(note_count, chunk_count)` read fresh from the store."""
+    conn = store.connect()
+    try:
+        return len(store.read_notes(conn)), store.chunk_count(conn)
+    finally:
+        conn.close()
+
+
 def _run_golden(
     args: argparse.Namespace,
     config: RagmarkConfig,
     store: IndexStore,
     embedder: FastembedEmbedder,
 ) -> int:
-    """Evaluate the golden set against live search; gate on --min-recall."""
+    """Evaluate the golden set against live search; gate on --min-recall.
+
+    Refreshes the index once up front, then fingerprints the corpus before
+    and after the evaluation loop: a corpus that changes mid-run (a live
+    vault edited in another window) would otherwise be silently measured as
+    one corpus (issue #121). A reading taken before that first refresh would
+    instead flag every run against a stale-at-start index as drift, so the
+    "before" reading is deliberately taken after it.
+    """
 
     def search_notes(query: str, k: int) -> list[str]:
         hits = search.search(
@@ -180,15 +266,39 @@ def _run_golden(
                 ranked_notes.append(hit.note_path)
         return ranked_notes
 
-    report = golden.evaluate(golden.load_golden(args.file), search_notes)
-    print(_json_dump(report))
+    index.refresh(config, store, embedder)
+    notes_before, chunks_before = _corpus_fingerprint(store)
+
+    queries = golden.load_golden(args.file)
+    report = golden.evaluate(queries, search_notes)
+    provenance = _gather_golden_provenance(args, config, store, embedder, len(queries))
+    notes_after, chunks_after = provenance.note_count, provenance.chunk_count
+    report = replace(report, provenance=provenance)
+
+    payload = asdict(report)
+    payload.update(
+        notes_before=notes_before,
+        chunks_before=chunks_before,
+        notes_after=notes_after,
+        chunks_after=chunks_after,
+    )
+    print(json.dumps(payload, indent=2))
+
+    exit_code = 0
+    if notes_before != notes_after or chunks_before != chunks_after:
+        print(
+            "golden corpus changed mid-run: notes "
+            f"{notes_before} -> {notes_after}, chunks {chunks_before} -> {chunks_after}",
+            file=sys.stderr,
+        )
+        exit_code = 1
     if args.min_recall is not None and report.mean_recall < args.min_recall:
         print(
             f"golden gate FAILED: mean recall {report.mean_recall:.3f} < {args.min_recall:.3f}",
             file=sys.stderr,
         )
-        return 1
-    return 0
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":
