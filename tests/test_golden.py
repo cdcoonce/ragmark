@@ -75,3 +75,47 @@ def test_evaluate_empty_set_is_zero_not_crash() -> None:
     report = golden.evaluate([], lambda text, k: [])
     assert report.rows == ()
     assert report.mean_recall == 0.0
+
+
+def test_vault_root_refuses_missing_expect_path(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "reference").mkdir(parents=True)
+    (vault_root / "reference" / "git.md").write_text("real note", encoding="utf-8")
+
+    content = """
+[[query]]
+text = "what did we decide about branch protection"
+expect = ["reference/git.md", "reference/renamed-away.md"]
+"""
+    golden_path = write_golden(tmp_path, content)
+
+    with pytest.raises(ValueError, match=r"query #0.*reference/renamed-away\.md"):
+        golden.load_golden(golden_path, vault_root=vault_root)
+
+
+def test_vault_root_accepts_existing_expect_path(tmp_path: Path) -> None:
+    vault_root = tmp_path / "vault"
+    (vault_root / "reference").mkdir(parents=True)
+    (vault_root / "reference" / "git.md").write_text("real note", encoding="utf-8")
+
+    content = """
+[[query]]
+text = "what did we decide about branch protection"
+expect = ["reference/git.md"]
+"""
+    golden_path = write_golden(tmp_path, content)
+
+    queries = golden.load_golden(golden_path, vault_root=vault_root)
+    assert queries[0].expect == ("reference/git.md",)
+
+
+def test_no_vault_root_does_not_check_existence(tmp_path: Path) -> None:
+    content = """
+[[query]]
+text = "what did we decide about branch protection"
+expect = ["reference/does-not-exist.md"]
+"""
+    golden_path = write_golden(tmp_path, content)
+
+    queries = golden.load_golden(golden_path)
+    assert queries[0].expect == ("reference/does-not-exist.md",)
