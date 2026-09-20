@@ -231,13 +231,30 @@ def _gather_golden_provenance(
     )
 
 
+def _corpus_fingerprint(store: IndexStore) -> tuple[int, int]:
+    """`(note_count, chunk_count)` read fresh from the store."""
+    conn = store.connect()
+    try:
+        return len(store.read_notes(conn)), store.chunk_count(conn)
+    finally:
+        conn.close()
+
+
 def _run_golden(
     args: argparse.Namespace,
     config: RagmarkConfig,
     store: IndexStore,
     embedder: FastembedEmbedder,
 ) -> int:
-    """Evaluate the golden set against live search; gate on --min-recall."""
+    """Evaluate the golden set against live search; gate on --min-recall.
+
+    Refreshes the index once up front, then fingerprints the corpus before
+    and after the evaluation loop: a corpus that changes mid-run (a live
+    vault edited in another window) would otherwise be silently measured as
+    one corpus (issue #121). A reading taken before that first refresh would
+    instead flag every run against a stale-at-start index as drift, so the
+    "before" reading is deliberately taken after it.
+    """
 
     def search_notes(query: str, k: int) -> list[str]:
         hits = search.search(
@@ -249,18 +266,39 @@ def _run_golden(
                 ranked_notes.append(hit.note_path)
         return ranked_notes
 
+    index.refresh(config, store, embedder)
+    notes_before, chunks_before = _corpus_fingerprint(store)
+
     queries = golden.load_golden(args.file)
     report = golden.evaluate(queries, search_notes)
     provenance = _gather_golden_provenance(args, config, store, embedder, len(queries))
+    notes_after, chunks_after = provenance.note_count, provenance.chunk_count
     report = replace(report, provenance=provenance)
-    print(_json_dump(report))
+
+    payload = asdict(report)
+    payload.update(
+        notes_before=notes_before,
+        chunks_before=chunks_before,
+        notes_after=notes_after,
+        chunks_after=chunks_after,
+    )
+    print(json.dumps(payload, indent=2))
+
+    exit_code = 0
+    if notes_before != notes_after or chunks_before != chunks_after:
+        print(
+            "golden corpus changed mid-run: notes "
+            f"{notes_before} -> {notes_after}, chunks {chunks_before} -> {chunks_after}",
+            file=sys.stderr,
+        )
+        exit_code = 1
     if args.min_recall is not None and report.mean_recall < args.min_recall:
         print(
             f"golden gate FAILED: mean recall {report.mean_recall:.3f} < {args.min_recall:.3f}",
             file=sys.stderr,
         )
-        return 1
-    return 0
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":
