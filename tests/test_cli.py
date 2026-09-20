@@ -330,6 +330,95 @@ def test_golden_verb_records_provenance(monkeypatch, capsys, make_vault, tmp_pat
     assert provenance["fusion"] == "score"
 
 
+def test_golden_reports_no_drift_when_corpus_is_stable(
+    monkeypatch, capsys, make_vault, tmp_path
+) -> None:
+    """A run whose corpus doesn't change mid-loop gets today's payload plus
+    the four fingerprint keys, an empty stderr, and exit 0 (issue #121)."""
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    exit_code = main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.err == ""
+
+    payload = json.loads(captured.out)
+    assert set(payload) == {
+        "rows",
+        "mean_recall",
+        "provenance",
+        "notes_before",
+        "chunks_before",
+        "notes_after",
+        "chunks_after",
+    }
+    assert payload["notes_before"] == payload["notes_after"] > 0
+    assert payload["chunks_before"] == payload["chunks_after"] > 0
+
+
+def test_golden_detects_corpus_drift_mid_run(monkeypatch, capsys, make_vault, tmp_path) -> None:
+    """A chunk row inserted into the real store between the two fingerprint
+    readings is caught, not silently folded into a single measurement
+    (issue #121). The insert happens via a patched `search.search` so the
+    detection path itself — not just the comparison — is exercised."""
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+
+    inserted = False
+
+    def drifting_search(query, k, *, config, store, embedder, fusion):
+        nonlocal inserted
+        if not inserted:
+            inserted = True
+            conn = store.connect()
+            try:
+                conn.execute(
+                    "INSERT INTO chunks (chunk_id, note_path, chunk_index, heading, "
+                    "parent_ref, text, token_count, vector_row) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("drift-chunk", "drift-note.md", 0, None, None, "drift text", 2, -1),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return []
+
+    monkeypatch.setattr(search, "search", drifting_search)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    exit_code = main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+
+    payload = json.loads(captured.out)
+    assert payload["notes_before"] == payload["notes_after"]
+    assert payload["chunks_after"] == payload["chunks_before"] + 1
+    assert str(payload["chunks_before"]) in captured.err
+    assert str(payload["chunks_after"]) in captured.err
+    assert "notes" in captured.err
+    assert "chunks" in captured.err
+
+
 def test_golden_oracle_sha256_is_stable_and_changes_with_content(
     monkeypatch, capsys, make_vault, tmp_path
 ) -> None:
