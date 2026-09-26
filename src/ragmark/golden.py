@@ -54,17 +54,60 @@ class GoldenRow:
 
 
 @dataclass(frozen=True, slots=True)
+class GoldenRegression:
+    """One query's recall change between a baseline and current report."""
+
+    query: str
+    baseline_recall: float
+    current_recall: float
+    delta: float
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenProvenance:
+    """The inputs a saved report was measured against — attribution, not math.
+
+    `evaluate` never constructs this; the CLI gathers the values (oracle
+    bytes, corpus counts, model identity, vault git state) and attaches it,
+    per the module's FORMAT/MATH-vs-gathering split.
+    """
+
+    oracle_path: str
+    oracle_sha256: str
+    query_count: int
+    vault_revision: str | None
+    vault_dirty: bool | None
+    note_count: int
+    chunk_count: int
+    model_name: str
+    model_dim: int
+    model_version: str
+    fusion: str
+    ragmark_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GoldenReport:
     """Aggregate evaluation of a golden set."""
 
     rows: tuple[GoldenRow, ...]
     mean_recall: float
+    provenance: GoldenProvenance | None = None
 
 
-def load_golden(path: Path) -> list[GoldenQuery]:
-    """Load and validate a golden-query file."""
+def load_golden(path: Path, vault_root: Path | None = None) -> list[GoldenQuery]:
+    """Load and validate a golden-query file.
+
+    If *vault_root* is given, every 'expect' path is additionally checked to
+    resolve to an existing file under it, failing fast on the first offending
+    entry (query order, then 'expect' order). Without *vault_root*, existence
+    is not checked — today's behavior.
+    """
     if not path.exists():
         raise FileNotFoundError(f"golden file not found: {path}")
+    if vault_root is not None and not vault_root.exists():
+        raise ValueError(f"vault_root not found: {vault_root}")
+    resolved_root = vault_root.resolve() if vault_root is not None else None
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     entries = data.get("query")
     if not isinstance(entries, list) or not entries:
@@ -81,6 +124,20 @@ def load_golden(path: Path) -> list[GoldenQuery]:
             raise ValueError(f"query #{position}: 'expect' must be a non-empty list of paths")
         if not isinstance(k, int) or k <= 0:
             raise ValueError(f"query #{position}: 'k' must be a positive integer")
+        if resolved_root is not None:
+            for expect_path in expect:
+                prefix = f"query #{position}: 'expect' path {expect_path!r}"
+                if not isinstance(expect_path, str):
+                    raise ValueError(f"{prefix} must be a string")
+                if Path(expect_path).is_absolute():
+                    raise ValueError(f"{prefix} must be relative to vault_root")
+                candidate = (resolved_root / expect_path).resolve()
+                try:
+                    candidate.relative_to(resolved_root)
+                except ValueError:
+                    raise ValueError(f"{prefix} escapes vault_root") from None
+                if not candidate.is_file():
+                    raise ValueError(f"{prefix} does not exist under vault_root")
         queries.append(GoldenQuery(text=text.strip(), expect=tuple(expect), k=k))
     return queries
 
@@ -111,3 +168,28 @@ def evaluate(
         )
     mean = sum(r.recall for r in rows) / len(rows) if rows else 0.0
     return GoldenReport(rows=tuple(rows), mean_recall=mean)
+
+
+def diff_reports(baseline: GoldenReport, current: GoldenReport) -> tuple[GoldenRegression, ...]:
+    """Pair rows from *baseline* and *current* by query text.
+
+    One `GoldenRegression` per query present in both reports, in
+    `baseline.rows` order. Queries present in only one report are excluded.
+    Includes improvements and unchanged queries, not only regressions —
+    callers filter for `delta < 0` themselves.
+    """
+    current_by_query = {row.query: row for row in current.rows}
+    regressions: list[GoldenRegression] = []
+    for baseline_row in baseline.rows:
+        current_row = current_by_query.get(baseline_row.query)
+        if current_row is None:
+            continue
+        regressions.append(
+            GoldenRegression(
+                query=baseline_row.query,
+                baseline_recall=baseline_row.recall,
+                current_recall=current_row.recall,
+                delta=current_row.recall - baseline_row.recall,
+            )
+        )
+    return tuple(regressions)
