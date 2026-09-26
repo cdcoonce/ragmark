@@ -96,6 +96,24 @@ Keep changes minimal and scoped to the issue's acceptance criteria. If the issue
 explicitly directs a change to a seeded surface (a human-triaged decision recorded in the \
 issue), the issue wins over the do-not-redesign default."""
 
+# auto_promote ON, gated on a cold read (2026-08-09).
+#
+# `cold-read:pass` is a required label, so auto-promote can only pick issues a
+# fresh reader — one that did not shape the spec — has cleared as buildable.
+# `cold-read:rewrite` and `cold-read:blocked` issues can never be picked up.
+#
+# This repo is why the gate exists: on 2026-08-08 all three of #9/#10/#11 were
+# cold-read independently and all three came back with blocking findings — the
+# same one, in fact (each removes an xfail that `tests/test_contract.py`'s
+# owed-behaviour guard asserts still exists, while each demands a green gate).
+# Promoting any of them unread would have burned three runs.
+#
+# Measured before enabling: 1 issue qualifies (#9, already promoted and already
+# landed on afk/epic-1), so this changes nothing today.
+[auto_promote]
+enabled = true
+required_labels = ["proposed", "afk-sized", "cold-read:pass"]
+
 [caps]
 max_retries = 2
 timeout_seconds = 1800

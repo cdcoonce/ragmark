@@ -24,6 +24,10 @@ venv/
 # accumulate toward a LOCAL agreement bar. Machine-local by construction — never shared.
 .afk/parity/
 .afk/cycle.lock
+# Per-machine daily cycle counter ({"date","planned","drained"}), rewritten on each
+# drain. Unlike `.afk/question.md` above, it carries nothing a reviewer needs and is
+# meaningless on the other machine, so it must not travel with a branch.
+.afk/last-cycle.json
 docs/dev-cycle/telemetry.jsonl
 docs/dev-cycle/last-run.md
 docs/dev-cycle/quarantine-log.md
