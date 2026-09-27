@@ -113,6 +113,11 @@ issue), the issue wins over the do-not-redesign default."""
 [auto_promote]
 enabled = true
 required_labels = ["proposed", "afk-sized", "cold-read:pass"]
+# A pass promotes only while its body still carries a current cold-read stamp:
+# the body hash matches and no dependency recorded open has since closed
+# (afk#1534; stamps are written by the-workshop's cold_read_stamp.py after a
+# fresh reader's BUILD). An unstamped or stale pass waits for a re-read.
+require_cold_read_stamp = true
 
 [caps]
 max_retries = 2
