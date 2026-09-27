@@ -8,6 +8,33 @@ still does not invoke `ragmark golden` (the gate is ruff + pytest + teeth-check)
 This file records the first baseline and the RRF-vs-score-fusion comparison that
 produced it.
 
+## Current baseline — 2026-09-26 (supersedes the headline below)
+
+This is the first re-baseline, run after the oracle review. It has full provenance: #120's `GoldenProvenance` is on every report.
+
+| | |
+|---|---|
+| oracle | the-vault `.claude/ragmark/golden.toml`, 31 queries. It is now fully reviewed: the four stale `expect` paths below were repointed, and the two agent-made 2026-09-19 edits were accepted. `oracle_sha256` `850c5dce…d37342` |
+| corpus | the-vault @ `b8209bcc`, `vault_dirty: false`, 1003 notes / 13,943 chunks; no drift within the run (#121) |
+| model | `BAAI/bge-small-en-v1.5`, dim 384, fastembed 0.8.0 |
+| ragmark | `dev` @ `91b1fa9` |
+| order | RRF, score, RRF on one settled index. Both RRF runs were byte-identical |
+
+| arm | mean recall@k |
+|---|---|
+| **RRF** (shipped default) | **0.8656** |
+| CombSUM score fusion | 0.9086 |
+| delta | +0.0430 (+4.3pp) |
+
+The **achievable ceiling is 1.0 minus the deliberately-red reproducer**. `retryability of a quarantined slice` (#118) scores 0.00 under both arms, as designed. Every repointed query scores 1.00 under both arms, so the old ceiling of 0.9167 is gone.
+
+Nothing moved on the fusion question. The discordant set is the **same four queries, 3–1** as on 2026-09-19 (listed under *Result* below), and the exact two-sided sign test is again **p = 0.625**. The default stays `Fusion.RRF`, for the reasons given below.
+
+Where the reports live: the full per-query reports are **not** committed here, because this repo is public and the rows name private vault notes. They sit in the vault, next to the oracle, at `.claude/ragmark/baselines/2026-09-26-{rrf,score}.json`, which is where #125's `--baseline` will read them from.
+
+Cost correction: building the index from cold in a fresh checkout took **43 min** (wall clock, ~350% CPU), not the minutes implied below. It is still paid once per checkout. After that, each arm took ~15s.
+
+
 ## Setup
 
 | | |
@@ -67,6 +94,8 @@ repeated on a settled index and reproduced exactly: 0.7778 / 0.8222 / 0.7778,
 12,971 chunks before and after.
 
 ## The oracle's ceiling is NOT 1.0 — four expect-paths are stale
+
+_Resolved 2026-09-26: all four were repointed in the vault's `golden.toml`. See the current baseline above._
 
 Four of the 43 expected paths no longer exist. All four are pure renames
 (`git log --diff-filter=R` shows R100, content identical) that happened after the
