@@ -105,6 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_golden = sub.add_parser("golden", help="run the golden-query harness")
     p_golden.add_argument("--file", required=True, type=Path)
     p_golden.add_argument("--min-recall", type=float, default=None)
+    p_golden.add_argument("--baseline", type=Path, default=None)
     _add_fusion_flag(p_golden)
 
     p_index = sub.add_parser("index", help="build/refresh the derived index (CLI-only)")
@@ -283,6 +284,25 @@ def _run_golden(
         chunks_after=chunks_after,
     )
     print(json.dumps(payload, indent=2))
+
+    baseline_path = getattr(args, "baseline", None)
+    if baseline_path is not None:
+        try:
+            baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
+            baseline_report = golden.report_from_dict(baseline_data)
+        except (OSError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        regressions = [r for r in golden.diff_reports(baseline_report, report) if r.delta < 0]
+        print("regressions vs baseline:")
+        if regressions:
+            for regression in regressions:
+                print(
+                    f"  {regression.query}: {regression.baseline_recall:.3f} -> "
+                    f"{regression.current_recall:.3f} ({regression.delta:+.3f})"
+                )
+        else:
+            print("  none")
 
     exit_code = 0
     if notes_before != notes_after or chunks_before != chunks_after:
