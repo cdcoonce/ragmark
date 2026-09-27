@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -158,3 +160,175 @@ def test_diff_reports_pairs_shared_queries_in_baseline_order() -> None:
         query="charlie", baseline_recall=0.25, current_recall=0.0, delta=-0.25
     )
     assert not any(r.query in ("baseline-only", "current-only") for r in result)
+
+
+def _provenance(**overrides: object) -> golden.GoldenProvenance:
+    defaults: dict = dict(
+        oracle_path="golden.toml",
+        oracle_sha256="deadbeef",
+        query_count=2,
+        vault_revision="abc123",
+        vault_dirty=None,
+        note_count=10,
+        chunk_count=42,
+        model_name="bge-small",
+        model_dim=384,
+        model_version="1.5",
+        fusion="rrf",
+        ragmark_version=None,
+    )
+    defaults.update(overrides)
+    return golden.GoldenProvenance(**defaults)
+
+
+def _report_with_provenance() -> golden.GoldenReport:
+    rows = (
+        _row("alpha", 1.0),
+        _row("bravo", 0.5),
+    )
+    return golden.GoldenReport(rows=rows, mean_recall=0.75, provenance=_provenance())
+
+
+def test_report_from_dict_round_trip_with_provenance() -> None:
+    report = _report_with_provenance()
+
+    data = json.loads(json.dumps(dataclasses.asdict(report)))
+    result = golden.report_from_dict(data)
+
+    assert result == report
+    assert isinstance(result.provenance, golden.GoldenProvenance)
+
+
+def test_report_from_dict_round_trip_without_provenance() -> None:
+    report = golden.GoldenReport(rows=(_row("alpha", 1.0),), mean_recall=1.0, provenance=None)
+
+    data = json.loads(json.dumps(dataclasses.asdict(report)))
+    assert data["provenance"] is None
+
+    result = golden.report_from_dict(data)
+
+    assert result == report
+    assert result.provenance is None
+
+
+def test_report_from_dict_pre_120_payload_has_no_provenance_key() -> None:
+    data = {
+        "rows": [
+            {"query": "alpha", "recall": 1.0, "found": ["a.md"], "missed": []},
+        ],
+        "mean_recall": 1.0,
+    }
+
+    result = golden.report_from_dict(data)
+
+    assert result.provenance is None
+
+
+def test_report_from_dict_ignores_unknown_top_level_keys() -> None:
+    report = golden.GoldenReport(rows=(_row("alpha", 1.0),), mean_recall=1.0)
+    data = json.loads(json.dumps(dataclasses.asdict(report)))
+
+    with_extra = dict(data)
+    with_extra.update(
+        notes_before=5,
+        chunks_before=20,
+        notes_after=6,
+        chunks_after=24,
+    )
+
+    assert golden.report_from_dict(with_extra) == golden.report_from_dict(data)
+
+
+def test_report_from_dict_ignores_unknown_row_key() -> None:
+    report = golden.GoldenReport(rows=(_row("alpha", 1.0),), mean_recall=1.0)
+    data = json.loads(json.dumps(dataclasses.asdict(report)))
+
+    with_extra = json.loads(json.dumps(dataclasses.asdict(report)))
+    with_extra["rows"][0]["elapsed_ms"] = 12
+
+    assert golden.report_from_dict(with_extra) == golden.report_from_dict(data)
+
+
+def test_report_from_dict_ignores_unknown_provenance_key() -> None:
+    report = _report_with_provenance()
+    data = json.loads(json.dumps(dataclasses.asdict(report)))
+
+    with_extra = json.loads(json.dumps(dataclasses.asdict(report)))
+    with_extra["provenance"]["host"] = "laptop"
+
+    assert golden.report_from_dict(with_extra) == golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_mean_recall_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["mean_recall"]
+
+    with pytest.raises(ValueError, match="mean_recall"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_second_row_recall_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["rows"][1]["recall"]
+
+    with pytest.raises(ValueError, match=r"rows\[1\]\.recall"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_provenance_model_name_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["provenance"]["model_name"]
+
+    with pytest.raises(ValueError, match=r"provenance\.model_name"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_provenance_vault_revision_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["provenance"]["vault_revision"]
+
+    with pytest.raises(ValueError, match=r"provenance\.vault_revision"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_provenance_vault_dirty_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["provenance"]["vault_dirty"]
+
+    with pytest.raises(ValueError, match=r"provenance\.vault_dirty"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_missing_provenance_ragmark_version_raises() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    del data["provenance"]["ragmark_version"]
+
+    with pytest.raises(ValueError, match=r"provenance\.ragmark_version"):
+        golden.report_from_dict(data)
+
+
+def test_report_from_dict_null_vault_revision_preserved() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    data["provenance"]["vault_revision"] = None
+
+    result = golden.report_from_dict(data)
+
+    assert result.provenance.vault_revision is None
+
+
+def test_report_from_dict_null_vault_dirty_preserved() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    data["provenance"]["vault_dirty"] = None
+
+    result = golden.report_from_dict(data)
+
+    assert result.provenance.vault_dirty is None
+
+
+def test_report_from_dict_null_ragmark_version_preserved() -> None:
+    data = json.loads(json.dumps(dataclasses.asdict(_report_with_provenance())))
+    data["provenance"]["ragmark_version"] = None
+
+    result = golden.report_from_dict(data)
+
+    assert result.provenance.ragmark_version is None
