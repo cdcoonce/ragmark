@@ -142,6 +142,67 @@ def load_golden(path: Path, vault_root: Path | None = None) -> list[GoldenQuery]
     return queries
 
 
+def _row_from_dict(data: dict, index: int) -> GoldenRow:
+    def require(key: str):
+        if key not in data:
+            raise ValueError(f"missing required key: rows[{index}].{key}")
+        return data[key]
+
+    return GoldenRow(
+        query=require("query"),
+        recall=require("recall"),
+        found=tuple(require("found")),
+        missed=tuple(require("missed")),
+    )
+
+
+def _provenance_from_dict(data: dict) -> GoldenProvenance:
+    def require(key: str):
+        if key not in data:
+            raise ValueError(f"missing required key: provenance.{key}")
+        return data[key]
+
+    return GoldenProvenance(
+        oracle_path=require("oracle_path"),
+        oracle_sha256=require("oracle_sha256"),
+        query_count=require("query_count"),
+        vault_revision=require("vault_revision"),
+        vault_dirty=require("vault_dirty"),
+        note_count=require("note_count"),
+        chunk_count=require("chunk_count"),
+        model_name=require("model_name"),
+        model_dim=require("model_dim"),
+        model_version=require("model_version"),
+        fusion=require("fusion"),
+        ragmark_version=require("ragmark_version"),
+    )
+
+
+def report_from_dict(data: dict) -> GoldenReport:
+    """Reconstruct a `GoldenReport` from a `json.loads(_json_dump(report))` dict.
+
+    The inverse of `dataclasses.asdict` for `GoldenReport`. Unknown keys at any
+    level (report, row, provenance) are ignored — forward compatibility for
+    fields added by later issues. A key backing a field without a dataclass
+    default that is absent (not merely `null`) raises `ValueError` naming it,
+    since this module is the quality oracle and a silently fabricated report
+    would corrupt a regression diff.
+    """
+
+    def require(key: str):
+        if key not in data:
+            raise ValueError(f"missing required key: {key}")
+        return data[key]
+
+    rows = tuple(_row_from_dict(row, index) for index, row in enumerate(require("rows")))
+    mean_recall = require("mean_recall")
+
+    provenance_data = data.get("provenance")
+    provenance = _provenance_from_dict(provenance_data) if provenance_data is not None else None
+
+    return GoldenReport(rows=rows, mean_recall=mean_recall, provenance=provenance)
+
+
 def evaluate(
     queries: list[GoldenQuery],
     search_notes: Callable[[str, int], list[str]],

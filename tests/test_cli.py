@@ -203,6 +203,149 @@ def test_golden_passes_the_fusion_mode_into_search(monkeypatch, tmp_path, make_v
     assert seen == [search.Fusion.SCORE]
 
 
+def _regression_block(stdout: str) -> str:
+    return stdout.split("regressions vs baseline:", 1)[1]
+
+
+def test_golden_baseline_prints_only_regressed_queries(
+    monkeypatch, capsys, tmp_path, make_vault
+) -> None:
+    import argparse
+
+    from ragmark import cli, golden
+
+    def fake_search(query, k, *, config, store, embedder, fusion):
+        if query == "q1":
+            return [type("Hit", (), {"note_path": "a.md"})()]
+        return []
+
+    monkeypatch.setattr(cli.search, "search", fake_search)
+    monkeypatch.setattr(
+        golden,
+        "load_golden",
+        lambda path: [
+            golden.GoldenQuery(text="q1", expect=("a.md",), k=8),
+            golden.GoldenQuery(text="q2", expect=("b.md",), k=8),
+        ],
+    )
+
+    baseline_report = golden.GoldenReport(
+        rows=(
+            golden.GoldenRow(query="q1", recall=1.0, found=("a.md",), missed=()),
+            golden.GoldenRow(query="q2", recall=1.0, found=("b.md",), missed=()),
+        ),
+        mean_recall=1.0,
+    )
+    baseline_file = tmp_path / "baseline.json"
+    baseline_file.write_text(_json_dump(baseline_report), encoding="utf-8")
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text(
+        "[[query]]\ntext = 'q1'\nexpect = ['a.md']\n\n[[query]]\ntext = 'q2'\nexpect = ['b.md']\n",
+        encoding="utf-8",
+    )
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=baseline_file,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    block = _regression_block(captured.out)
+    assert "q2: 1.000 -> 0.000 (-1.000)" in block
+    assert "q1" not in block
+    assert exit_code == 0
+
+
+def test_golden_baseline_prints_none_when_nothing_regressed(
+    monkeypatch, capsys, tmp_path, make_vault
+) -> None:
+    import argparse
+
+    from ragmark import cli, golden
+
+    def fake_search(query, k, *, config, store, embedder, fusion):
+        return [type("Hit", (), {"note_path": "a.md"})()]
+
+    monkeypatch.setattr(cli.search, "search", fake_search)
+    monkeypatch.setattr(
+        golden,
+        "load_golden",
+        lambda path: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+    )
+
+    baseline_report = golden.GoldenReport(
+        rows=(golden.GoldenRow(query="q1", recall=1.0, found=("a.md",), missed=()),),
+        mean_recall=1.0,
+    )
+    baseline_file = tmp_path / "baseline.json"
+    baseline_file.write_text(_json_dump(baseline_report), encoding="utf-8")
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text("[[query]]\ntext = 'q1'\nexpect = ['a.md']\n", encoding="utf-8")
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=baseline_file,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    block = _regression_block(captured.out)
+    assert block.strip().splitlines()[0].strip() == "none"
+    assert exit_code == 0
+
+
+def test_golden_baseline_missing_file_returns_error(
+    monkeypatch, capsys, tmp_path, make_vault
+) -> None:
+    import argparse
+
+    from ragmark import cli, golden
+
+    monkeypatch.setattr(
+        golden,
+        "load_golden",
+        lambda path: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+    )
+    monkeypatch.setattr(
+        cli.search,
+        "search",
+        lambda query, k, *, config, store, embedder, fusion: [],
+    )
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text("[[query]]\ntext = 'q1'\nexpect = ['a.md']\n", encoding="utf-8")
+    missing_baseline = tmp_path / "does-not-exist.json"
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=missing_baseline,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "error:" in captured.err
+    assert "regressions vs baseline:" not in captured.out
+
+
 def test_index_parser_arguments() -> None:
     parser = _build_parser()
     args = parser.parse_args(["index"])
