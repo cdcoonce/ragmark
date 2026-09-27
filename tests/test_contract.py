@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from ragmark import activity, chunk, gaps, neighbors, search
+from ragmark import chunk, gaps, neighbors, search
 from ragmark.config import RagmarkConfig
 
 OWED = pytest.mark.xfail(strict=True, raises=NotImplementedError, reason="owed to a build slice")
@@ -59,16 +59,11 @@ def seed_config(tmp_path: Path) -> RagmarkConfig:
 
 
 @OWED
-def test_owed_activity(tmp_path: Path) -> None:
-    activity.recent_activity(config=seed_config(tmp_path))
-
-
-@OWED
 def test_owed_gaps(tmp_path: Path) -> None:
     gaps.gaps(config=seed_config(tmp_path))
 
 
-def test_exactly_two_owed_behaviors_remain() -> None:
+def test_exactly_one_owed_behavior_remains() -> None:
     """Guards the owed-xfail contract itself: each landing slice deletes its
     own `test_owed_*` marker, so the surviving count is a live check that no
     slice quietly dropped (or kept) one it shouldn't have."""
@@ -80,6 +75,5 @@ def test_exactly_two_owed_behaviors_remain() -> None:
         and any(m.name == "xfail" for m in getattr(getattr(module, name), "pytestmark", ()))
     ]
     assert sorted(owed) == [
-        "test_owed_activity",
         "test_owed_gaps",
     ]
