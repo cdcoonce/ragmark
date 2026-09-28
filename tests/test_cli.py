@@ -18,7 +18,7 @@ import pytest
 from ragmark import search
 from ragmark.cli import VAULT_ENV, _build_parser, _json_dump, main
 from ragmark.embed import Embedder
-from ragmark.golden import GoldenQuery, GoldenReport, GoldenRow
+from ragmark.golden import GoldenReport, GoldenRow
 from ragmark.index import RefreshReport
 from ragmark.model import (
     ActivityEntry,
@@ -695,7 +695,7 @@ def test_golden_provenance_vault_git_state_present_inside_a_repo(
         GoldenReport(
             rows=(
                 GoldenRow(
-                    query=GoldenQuery(text="q", expect=("a.md",), k=8),
+                    query="q",
                     recall=1.0,
                     found=("a.md",),
                     missed=(),
@@ -719,5 +719,6 @@ def test_json_dump_handles_every_slots_result_type(result) -> None:
         assert payload["neighbors"][0]["note_path"] == "b.md"
         assert payload["neighbors"][0]["included"] is True
     if isinstance(result, GoldenReport):
-        assert payload["rows"][0]["query"]["text"] == "q"
+        assert payload["rows"][0]["query"] == "q"
+        assert isinstance(payload["rows"][0]["query"], str)
         assert payload["rows"][0]["found"] == ["a.md"]
