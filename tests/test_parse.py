@@ -46,6 +46,46 @@ def test_parse_note_empty_frontmatter_block() -> None:
     assert body == "body"
 
 
+def test_parse_note_crlf_frontmatter_matches_lf_twin() -> None:
+    text = "---\r\ndescription: A note\r\ntags: [x, y]\r\n---\r\nbody text"
+
+    meta, body = parse_note(text)
+
+    assert meta == NoteMeta("A note", ("x", "y"), ())
+    assert body == "body text"
+
+
+def test_parse_note_crlf_body_normalized_to_lf() -> None:
+    frontmatter_text = (
+        "---\r\ndescription: A note\r\n---\r\nline one\r\nline two\r\n\r\nline three\r\n"
+    )
+    no_frontmatter_text = "line one\r\nline two\r\n\r\nline three\r\n"
+
+    _, frontmatter_body = parse_note(frontmatter_text)
+    _, no_frontmatter_body = parse_note(no_frontmatter_text)
+
+    assert "\r" not in frontmatter_body
+    assert "\r" not in no_frontmatter_body
+    assert no_frontmatter_body == "line one\nline two\n\nline three\n"
+
+
+def test_parse_note_lf_frontmatter_unchanged() -> None:
+    text = "---\ndescription: A note\ntags: [x, y]\n---\nline one\n\nline two\n"
+
+    meta, body = parse_note(text)
+
+    assert meta == NoteMeta("A note", ("x", "y"), ())
+    assert body == "line one\n\nline two\n"
+
+
+def test_parse_note_lone_cr_left_unchanged() -> None:
+    text = "---\ndescription: d\n---\na\rb"
+
+    _, body = parse_note(text)
+
+    assert body == "a\rb"
+
+
 # --- render_for_embedding -----------------------------------------------
 
 
