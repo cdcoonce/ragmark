@@ -66,6 +66,8 @@ def test_evaluate_scores_recall_at_k(tmp_path: Path) -> None:
     report = golden.evaluate(queries, search_notes)
 
     first, second = report.rows
+    assert isinstance(first.query, str)
+    assert first.query == queries[0].text
     assert first.recall == 0.5
     assert first.found == ("reference/git.md",)
     assert first.missed == ("brain/decisions.md",)
