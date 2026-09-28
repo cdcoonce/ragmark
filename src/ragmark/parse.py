@@ -47,6 +47,7 @@ def parse_note(text: str) -> tuple[NoteMeta, str]:
     `yaml.YAMLError` — the caller is expected to catch it, index the note
     with empty meta, and surface the defect in the refresh report.
     """
+    text = text.replace("\r\n", "\n")
     if text != _FRONTMATTER_DELIM and not text.startswith(f"{_FRONTMATTER_DELIM}\n"):
         return NoteMeta(None, (), ()), text
 
