@@ -348,6 +348,65 @@ def test_golden_baseline_missing_file_returns_error(
     assert "regressions vs baseline:" not in captured.out
 
 
+@pytest.mark.parametrize(
+    "baseline_content",
+    [
+        pytest.param("5", id="bare-number"),
+        pytest.param("[]", id="empty-list"),
+        pytest.param(json.dumps({"mean_recall": 0.5, "rows": [7]}), id="non-dict-row"),
+        pytest.param(
+            _json_dump(
+                GoldenReport(
+                    rows=(GoldenRow(query="q1", recall="high", found=(), missed=("a.md",)),),
+                    mean_recall=1.0,
+                )
+            ),
+            id="non-numeric-recall",
+        ),
+    ],
+)
+def test_golden_baseline_wrong_shape_returns_error_not_traceback(
+    monkeypatch, capsys, tmp_path, make_vault, baseline_content
+) -> None:
+    import argparse
+
+    from ragmark import cli, golden
+
+    monkeypatch.setattr(
+        golden,
+        "load_golden",
+        lambda path, vault_root=None: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+    )
+    monkeypatch.setattr(
+        cli.search,
+        "search",
+        lambda query, k, *, config, store, embedder, fusion: [],
+    )
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text("[[query]]\ntext = 'q1'\nexpect = ['a.md']\n", encoding="utf-8")
+    baseline_file = tmp_path / "baseline.json"
+    baseline_file.write_text(baseline_content, encoding="utf-8")
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=baseline_file,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    err_lines = captured.err.splitlines()
+    assert len(err_lines) == 1
+    assert err_lines[0].startswith("error:")
+    assert "regressions vs baseline:" not in captured.out
+
+
 def test_index_parser_arguments() -> None:
     parser = _build_parser()
     args = parser.parse_args(["index"])

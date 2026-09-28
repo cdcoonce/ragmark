@@ -298,10 +298,10 @@ def _run_golden(
         try:
             baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
             baseline_report = golden.report_from_dict(baseline_data)
-        except (OSError, ValueError) as exc:
+            regressions = [r for r in golden.diff_reports(baseline_report, report) if r.delta < 0]
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        regressions = [r for r in golden.diff_reports(baseline_report, report) if r.delta < 0]
         print("regressions vs baseline:")
         if regressions:
             for regression in regressions:
