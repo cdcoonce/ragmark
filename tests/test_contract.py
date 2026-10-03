@@ -58,15 +58,11 @@ def seed_config(tmp_path: Path) -> RagmarkConfig:
     return RagmarkConfig.for_vault(vault)
 
 
-@OWED
-def test_owed_gaps(tmp_path: Path) -> None:
-    gaps.gaps(config=seed_config(tmp_path))
-
-
-def test_exactly_one_owed_behavior_remains() -> None:
+def test_exactly_zero_owed_behaviors_remain() -> None:
     """Guards the owed-xfail contract itself: each landing slice deletes its
-    own `test_owed_*` marker, so the surviving count is a live check that no
-    slice quietly dropped (or kept) one it shouldn't have."""
+    own `test_owed_*` marker, so the surviving count (zero, after the gaps
+    slice) is a live check that no slice quietly dropped (or kept) one it
+    shouldn't have."""
     module = sys.modules[__name__]
     owed = [
         name
@@ -74,6 +70,4 @@ def test_exactly_one_owed_behavior_remains() -> None:
         if name.startswith("test_owed_")
         and any(m.name == "xfail" for m in getattr(getattr(module, name), "pytestmark", ()))
     ]
-    assert sorted(owed) == [
-        "test_owed_gaps",
-    ]
+    assert sorted(owed) == []
