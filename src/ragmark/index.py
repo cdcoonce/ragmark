@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ragmark import chunk as chunk_mod
-from ragmark import gate, parse
+from ragmark import fences, gate, parse
 from ragmark.config import RagmarkConfig
 from ragmark.embed import Embedder
 from ragmark.model import NoteMeta
@@ -134,6 +134,11 @@ def _run_pass(
             meta, body = NoteMeta(None, (), ()), text
 
         chunks = chunk_mod.chunk_note(rel_path, body, meta, embedder.count_tokens)
+        unterminated = fences.unterminated_fence_line(body)
+        if unterminated is not None:
+            frontmatter_lines = text.count("\n") - body.count("\n")
+            file_line = unterminated + frontmatter_lines
+            defects.append(f"{rel_path}: unterminated code fence at line {file_line}")
         store.replace_chunks(conn, rel_path, chunks)
         store.write_note(conn, rel_path, sha256, mtime_ns)
         pending_texts.update({c.chunk_id: c.text for c in chunks})

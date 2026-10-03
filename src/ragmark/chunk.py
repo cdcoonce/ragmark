@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from ragmark.fences import find_fences
 from ragmark.model import Chunk, NoteMeta
 from ragmark.parse import render_for_embedding
 
@@ -39,7 +40,6 @@ CHUNK_TARGET_TOKENS = 300
 # heading markers — mirrors parse._HEADING_RE but anchored to one line (no
 # MULTILINE) since it is matched line-by-line to track fence state.
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*?)\s*$")
-_FENCE_TOGGLE_RE = re.compile(r"^\s*```")
 
 _BLANK_LINES_RE = re.compile(r"\n{2,}")
 _SENTENCE_END_RE = re.compile(r"[.!?]+(?:\s+|$)")
@@ -111,20 +111,19 @@ def _split_heading_sections(body: str) -> list[tuple[str | None, str | None, str
     current_heading: str | None = None
     current_parent: str | None = None
     buffer: list[str] = []
-    in_fence = False
+
+    lines = body.splitlines(keepends=True)
+    spans, _ = find_fences([line.rstrip("\r\n") for line in lines])
+    fenced = {index for start, end in spans for index in range(start, end + 1)}
 
     def flush() -> None:
         if buffer:
             sections.append((current_heading, current_parent, "".join(buffer)))
             buffer.clear()
 
-    for line in body.splitlines(keepends=True):
+    for index, line in enumerate(lines):
         content = line.rstrip("\r\n")
-        if _FENCE_TOGGLE_RE.match(content):
-            in_fence = not in_fence
-            buffer.append(line)
-            continue
-        if not in_fence:
+        if index not in fenced:
             match = _HEADING_LINE_RE.match(content)
             if match is not None:
                 flush()

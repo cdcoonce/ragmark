@@ -14,6 +14,7 @@ import ast
 import dataclasses
 import inspect
 import json
+import re
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
@@ -122,6 +123,7 @@ def test_hubn_degree_is_neighbors_other_than_itself_plus_two() -> None:
         if n != "hubn.md"
     }
     assert degrees["hubn.md"] == len(real_neighbors) + 2
+    assert gaps._degrees(graph)["hubn.md"] == 2
 
 
 def test_band_edges_inclusive_and_exclusive() -> None:
@@ -158,8 +160,11 @@ def test_hub_pair_ranks_after_lower_scoring_nonhub_pair() -> None:
     positions = {frozenset((a, b)): i for i, (a, b, _) in enumerate(result)}
     hub_pos = positions[frozenset({"hubn.md", "hubpartner.md"})]
     nonhub_pos = positions[frozenset({"nonhub_x.md", "nonhub_y.md"})]
+    hub_a, hub_b, hub_score = result[hub_pos]
+    assert "hubn.md" in (hub_a, hub_b)
+    assert hub_score == 0.85
+    assert hub_pos == len(result) - 1
     assert hub_pos > nonhub_pos
-    assert "hubn.md" in {"hubn.md", "hubpartner.md"}
 
 
 def test_cross_folder_ranks_before_same_folder_at_equal_score() -> None:
@@ -198,8 +203,8 @@ def test_rank_pairs_signature_has_no_defaults_and_no_extra_params() -> None:
 def test_docstring_has_no_transient_prefix_and_lists_differences() -> None:
     doc = gaps.__doc__ or ""
     assert "transient-prefix" not in doc
-    assert "1." in doc
-    assert "2." in doc
+    assert re.search(r"(?m)^1\. No ``sig`` in the output", doc)
+    assert re.search(r"(?m)^2\. No path-prefix exclusion", doc)
 
 
 _BANNED_NAMES = {"networkx", "_undirected", "metrics", "dismiss", "weaklink_sig"}

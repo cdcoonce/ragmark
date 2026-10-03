@@ -85,6 +85,22 @@ def test_read_missing_note_exits_1_with_gate_message(monkeypatch, capsys, make_v
     assert "Traceback" not in captured.err
 
 
+def test_gaps_on_unindexed_vault_exits_1_with_index_message(
+    monkeypatch, capsys, make_vault
+) -> None:
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr(sys, "argv", ["ragmark", "--vault", str(config.vault_root), "gaps"])
+
+    exit_code = main()
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert f"error: no ragmark index at {config.index_dir}" in captured.err
+    assert "ragmark index" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_parser_exposes_all_subcommands() -> None:
     parser = _build_parser()
     sub_actions = [

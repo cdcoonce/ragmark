@@ -282,3 +282,23 @@ def test_refresh_builds_an_unbuilt_empty_vault(tmp_path: Path) -> None:
 
     assert report == index.RefreshReport(added=0, updated=0, removed=0, unchanged=0, defects=())
     assert not store.vectors_path.exists()
+
+
+def test_unterminated_code_fence_is_indexed_as_a_defect(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_note(config, "u.md", "---\ndescription: d\n---\n# A\n\n```\ncode\n", BASE_MTIME)
+    store = IndexStore(config.index_dir)
+
+    report = index.reindex(config, store, RecordingEmbedder())
+
+    assert "u.md: unterminated code fence at line 6" in report.defects
+
+
+def test_balanced_code_fences_yield_no_defects(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    write_note(config, "b.md", "# A\n\n```\ncode\n```\n\n~~~\n# x\n~~~\n", BASE_MTIME)
+    store = IndexStore(config.index_dir)
+
+    report = index.reindex(config, store, RecordingEmbedder())
+
+    assert report.defects == ()
