@@ -38,7 +38,8 @@ CHUNK_TARGET_TOKENS = 300
 
 # Heading detection on the RAW body, before parse.render_for_embedding strips
 # heading markers — mirrors parse._HEADING_RE but anchored to one line (no
-# MULTILINE) since it is matched line-by-line to track fence state.
+# MULTILINE) since it is matched line by line; fence spans come from
+# fences.find_fences.
 _HEADING_LINE_RE = re.compile(r"^(#{1,6})[ \t]+(\S.*?)\s*$")
 
 _BLANK_LINES_RE = re.compile(r"\n{2,}")
@@ -101,9 +102,9 @@ def chunk_note(
 def _split_heading_sections(body: str) -> list[tuple[str | None, str | None, str]]:
     """Split the RAW body into (heading, parent_ref, text) sections.
 
-    A `#`-line inside a fenced code block is not a heading — matched
-    line-by-line so fence state can be tracked and skipped (step 2 of the
-    module contract). Sections partition `body` exactly: concatenating every
+    A `#`-line inside a fenced code block is not a heading — lines inside the
+    spans `fences.find_fences` returns are skipped (step 2 of the module
+    contract). Sections partition `body` exactly: concatenating every
     section's text reproduces `body` byte-for-byte.
     """
     sections: list[tuple[str | None, str | None, str]] = []
