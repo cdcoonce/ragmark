@@ -18,7 +18,7 @@ import pytest
 from ragmark import search
 from ragmark.cli import VAULT_ENV, _build_parser, _json_dump, main
 from ragmark.embed import Embedder
-from ragmark.golden import GoldenQuery, GoldenReport, GoldenRow
+from ragmark.golden import GoldenReport, GoldenRow
 from ragmark.index import RefreshReport
 from ragmark.model import (
     ActivityEntry,
@@ -189,7 +189,9 @@ def test_golden_passes_the_fusion_mode_into_search(monkeypatch, tmp_path, make_v
 
     monkeypatch.setattr(cli.search, "search", fake_search)
     monkeypatch.setattr(
-        golden, "load_golden", lambda path: [golden.GoldenQuery(text="q", expect=("a.md",), k=8)]
+        golden,
+        "load_golden",
+        lambda path, vault_root=None: [golden.GoldenQuery(text="q", expect=("a.md",), k=8)],
     )
 
     config = make_vault("personal")
@@ -223,7 +225,7 @@ def test_golden_baseline_prints_only_regressed_queries(
     monkeypatch.setattr(
         golden,
         "load_golden",
-        lambda path: [
+        lambda path, vault_root=None: [
             golden.GoldenQuery(text="q1", expect=("a.md",), k=8),
             golden.GoldenQuery(text="q2", expect=("b.md",), k=8),
         ],
@@ -277,7 +279,7 @@ def test_golden_baseline_prints_none_when_nothing_regressed(
     monkeypatch.setattr(
         golden,
         "load_golden",
-        lambda path: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+        lambda path, vault_root=None: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
     )
 
     baseline_report = golden.GoldenReport(
@@ -317,7 +319,7 @@ def test_golden_baseline_missing_file_returns_error(
     monkeypatch.setattr(
         golden,
         "load_golden",
-        lambda path: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+        lambda path, vault_root=None: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
     )
     monkeypatch.setattr(
         cli.search,
@@ -343,6 +345,65 @@ def test_golden_baseline_missing_file_returns_error(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "error:" in captured.err
+    assert "regressions vs baseline:" not in captured.out
+
+
+@pytest.mark.parametrize(
+    "baseline_content",
+    [
+        pytest.param("5", id="bare-number"),
+        pytest.param("[]", id="empty-list"),
+        pytest.param(json.dumps({"mean_recall": 0.5, "rows": [7]}), id="non-dict-row"),
+        pytest.param(
+            _json_dump(
+                GoldenReport(
+                    rows=(GoldenRow(query="q1", recall="high", found=(), missed=("a.md",)),),
+                    mean_recall=1.0,
+                )
+            ),
+            id="non-numeric-recall",
+        ),
+    ],
+)
+def test_golden_baseline_wrong_shape_returns_error_not_traceback(
+    monkeypatch, capsys, tmp_path, make_vault, baseline_content
+) -> None:
+    import argparse
+
+    from ragmark import cli, golden
+
+    monkeypatch.setattr(
+        golden,
+        "load_golden",
+        lambda path, vault_root=None: [golden.GoldenQuery(text="q1", expect=("a.md",), k=8)],
+    )
+    monkeypatch.setattr(
+        cli.search,
+        "search",
+        lambda query, k, *, config, store, embedder, fusion: [],
+    )
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "g.toml"
+    oracle_file.write_text("[[query]]\ntext = 'q1'\nexpect = ['a.md']\n", encoding="utf-8")
+    baseline_file = tmp_path / "baseline.json"
+    baseline_file.write_text(baseline_content, encoding="utf-8")
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=baseline_file,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    err_lines = captured.err.splitlines()
+    assert len(err_lines) == 1
+    assert err_lines[0].startswith("error:")
     assert "regressions vs baseline:" not in captured.out
 
 
@@ -671,6 +732,232 @@ def test_golden_provenance_vault_git_state_present_inside_a_repo(
     assert dirty_report["provenance"]["vault_dirty"] is True
 
 
+_STALE_GOLDEN_ORACLE = (
+    "[[query]]\ntext = 'branch protection'\nexpect = ['work/decisions/renamed-note.md']\n"
+)
+
+
+def test_golden_stale_expect_path_exits_1_before_refresh(
+    monkeypatch, capsys, tmp_path, make_vault
+) -> None:
+    """A stale `expect` path fails loud before any index work (issue #145)."""
+    import argparse
+
+    from ragmark import cli, index
+
+    def refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("index.refresh must not run when the oracle is stale")
+
+    monkeypatch.setattr(index, "refresh", refresh_must_not_run)
+
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_STALE_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    exit_code = main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Traceback" not in captured.err
+    assert "error: " in captured.err
+    assert "query #0" in captured.err
+    assert "work/decisions/renamed-note.md" in captured.err
+
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=None,
+    )
+    direct_exit_code = cli._run_golden(args, config, store, embedder)
+    assert direct_exit_code == 1
+
+
+def test_golden_missing_vault_root_exits_1_before_refresh(
+    monkeypatch, capsys, tmp_path, make_vault
+) -> None:
+    """`vault_root` is always passed, even when it doesn't exist (issue #145)."""
+    import argparse
+    from dataclasses import replace
+
+    from ragmark import cli, index
+
+    def refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("index.refresh must not run when vault_root is missing")
+
+    monkeypatch.setattr(index, "refresh", refresh_must_not_run)
+
+    config = make_vault("personal")
+    missing_root = tmp_path / "no-such-vault"
+    config = replace(config, vault_root=missing_root)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=None,
+    )
+
+    exit_code = cli._run_golden(args, config, store, embedder)
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Traceback" not in captured.err
+    assert f"error: vault_root not found: {missing_root}" in captured.err
+
+
+def test_golden_missing_file_raises_filenotfounderror(monkeypatch, tmp_path, make_vault) -> None:
+    from ragmark import index
+
+    def refresh_must_not_run(*args, **kwargs):
+        raise AssertionError("index.refresh must not run when the oracle file is missing")
+
+    monkeypatch.setattr(index, "refresh", refresh_must_not_run)
+
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    missing_file = tmp_path / "does-not-exist.toml"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(missing_file)],
+    )
+
+    with pytest.raises(FileNotFoundError):
+        main()
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["evaluate", "refresh", "fingerprint"],
+)
+def test_golden_try_block_wraps_only_load_golden(
+    monkeypatch, tmp_path, make_vault, target: str
+) -> None:
+    """The `try` around `load_golden` must not swallow defects raised later
+    in `_run_golden` — only the load itself (issue #145)."""
+    import argparse
+
+    from ragmark import cli, golden, index
+
+    if target == "evaluate":
+        message = "evaluate defect"
+
+        def raiser(*args, **kwargs):
+            raise ValueError(message)
+
+        monkeypatch.setattr(golden, "evaluate", raiser)
+    elif target == "refresh":
+        message = "refresh defect"
+
+        def raiser(*args, **kwargs):
+            raise ValueError(message)
+
+        monkeypatch.setattr(index, "refresh", raiser)
+    else:
+        message = "fingerprint defect"
+
+        def raiser(*args, **kwargs):
+            raise ValueError(message)
+
+        monkeypatch.setattr(cli, "_corpus_fingerprint", raiser)
+
+    config = make_vault("personal")
+    store = IndexStore(config.index_dir)
+    embedder = _StubEmbedder()
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    args = argparse.Namespace(
+        file=oracle_file,
+        min_recall=None,
+        fusion=search.Fusion.RRF,
+        baseline=None,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        cli._run_golden(args, config, store, embedder)
+
+
+def test_main_does_not_map_valueerror_for_search_verb(monkeypatch, make_vault) -> None:
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+
+    def raiser(*args, **kwargs):
+        raise ValueError("search defect")
+
+    monkeypatch.setattr(search, "search", raiser)
+    monkeypatch.setattr(sys, "argv", ["ragmark", "--vault", str(config.vault_root), "search", "q"])
+
+    with pytest.raises(ValueError, match="search defect"):
+        main()
+
+
+def test_main_does_not_map_valueerror_for_golden_verb(monkeypatch, tmp_path, make_vault) -> None:
+    from ragmark import golden
+
+    config = make_vault("personal")
+    monkeypatch.delenv(VAULT_ENV, raising=False)
+    monkeypatch.setattr("ragmark.cli.FastembedEmbedder", _StubEmbedder)
+
+    def raiser(*args, **kwargs):
+        raise ValueError("evaluate defect")
+
+    monkeypatch.setattr(golden, "evaluate", raiser)
+
+    oracle_file = tmp_path / "golden.toml"
+    oracle_file.write_text(_GOLDEN_ORACLE, encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ragmark", "--vault", str(config.vault_root), "golden", "--file", str(oracle_file)],
+    )
+
+    with pytest.raises(ValueError, match="evaluate defect"):
+        main()
+
+
+def test_golden_subparser_adds_no_opt_out_argument() -> None:
+    import argparse
+
+    parser = _build_parser()
+
+    args = parser.parse_args(["golden", "--file", "g.toml"])
+    assert set(vars(args)) == {"vault", "command", "file", "min_recall", "baseline", "fusion"}
+
+    subparsers_action = next(
+        action
+        for action in parser._actions  # type: ignore[union-attr]
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    golden_actions = subparsers_action.choices["golden"]._actions  # type: ignore[union-attr]
+    assert [action.dest for action in golden_actions] == [
+        "help",
+        "file",
+        "min_recall",
+        "baseline",
+        "fusion",
+    ]
+
+    assert [action.dest for action in parser._actions] == ["help", "vault", "command"]  # type: ignore[union-attr]
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -695,7 +982,7 @@ def test_golden_provenance_vault_git_state_present_inside_a_repo(
         GoldenReport(
             rows=(
                 GoldenRow(
-                    query=GoldenQuery(text="q", expect=("a.md",), k=8),
+                    query="q",
                     recall=1.0,
                     found=("a.md",),
                     missed=(),
@@ -719,5 +1006,6 @@ def test_json_dump_handles_every_slots_result_type(result) -> None:
         assert payload["neighbors"][0]["note_path"] == "b.md"
         assert payload["neighbors"][0]["included"] is True
     if isinstance(result, GoldenReport):
-        assert payload["rows"][0]["query"]["text"] == "q"
+        assert payload["rows"][0]["query"] == "q"
+        assert isinstance(payload["rows"][0]["query"], str)
         assert payload["rows"][0]["found"] == ["a.md"]

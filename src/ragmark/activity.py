@@ -8,6 +8,7 @@ vaults. Results are context-gated like every other surface.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import UTC, datetime, timedelta
 
@@ -80,6 +81,11 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
     """
     vault_root = config.vault_root
     git = ["git", "-C", str(vault_root), "-c", "core.quotePath=false"]
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    env.pop("GIT_INDEX_FILE", None)
+    env["GIT_NO_LAZY_FETCH"] = "1"
     try:
         prefix_result = subprocess.run(
             [*git, "rev-parse", "--show-prefix"],
@@ -87,6 +93,7 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
             encoding="utf-8",
             errors="surrogateescape",
             check=True,
+            env=env,
         )
         log_result = subprocess.run(
             [
@@ -104,6 +111,7 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
             encoding="utf-8",
             errors="surrogateescape",
             check=True,
+            env=env,
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -127,7 +135,7 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
         resolved = vault_root / rel_path
         if not gate.is_indexable_note(resolved, config):
             continue
-        if rel_path not in candidates:
+        if rel_path not in candidates or current_dt > candidates[rel_path]:
             candidates[rel_path] = current_dt
     return candidates
 

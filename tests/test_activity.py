@@ -271,6 +271,18 @@ def test_git_log_is_primary_not_mtime(git_vault) -> None:
     result = recent_activity(days=10, limit=50, config=git_vault.config)
     by_path = {e.note_path: e for e in result}
 
+    assert set(by_path) == {
+        "old8.md",
+        "recent6.md",
+        "twice.md",
+        "same-a.md",
+        "same-b.md",
+        "drafts/excluded.md",
+        "malformed.md",
+        "firstline.md",
+        "emptybody.md",
+    }
+
     for rel, dt in git_vault.note_times.items():
         if rel in by_path:
             assert by_path[rel].modified == _iso(dt)
@@ -287,6 +299,116 @@ def test_note_committed_twice_appears_once_with_latest_time(git_vault) -> None:
     assert len(matches) == 1
     assert matches[0].modified == _iso(git_vault.note_times["twice.md"])
     assert _MODIFIED_RE.fullmatch(matches[0].modified)
+
+
+def test_note_multiple_commits_keeps_max_committer_time_not_first_seen(tmp_path: Path) -> None:
+    repo_root, env, sentinel = _setup_repo(tmp_path, "repo-max-time")
+    now = datetime.now(UTC)
+
+    note = repo_root / "flip.md"
+    note.write_text("content v1\n", encoding="utf-8")
+    newer_time = now - timedelta(days=2)
+    _commit(repo_root, env, newer_time, "flip v1")
+
+    note.write_text("content v2\n", encoding="utf-8")
+    older_time = now - timedelta(days=5)
+    _commit(repo_root, env, older_time, "flip v2")
+
+    (repo_root / CONTEXT_FILE).write_text("work\n", encoding="utf-8")
+    config = RagmarkConfig.for_vault(repo_root)
+
+    result = recent_activity(config=config)
+    entry = next(e for e in result if e.note_path == "flip.md")
+    assert entry.modified == _iso(newer_time)
+    assert not sentinel.exists()
+
+
+def test_git_subprocess_calls_use_scrubbed_env_not_test_process_env(
+    git_vault, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent-git-dir"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "nonexistent-index"))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", "sentinel-ceiling-value")
+
+    real_run = subprocess.run
+    captured: list[dict[str, object]] = []
+
+    def recording_run(*args, **kwargs):
+        argv = args[0] if args else kwargs["args"]
+        env = kwargs.get("env")
+        captured.append(
+            {
+                "argv": list(argv),
+                "env": dict(os.environ) if env is None else dict(env),
+            }
+        )
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording_run)
+
+    env_snapshot = dict(os.environ)
+    result = recent_activity(config=git_vault.config)
+    assert dict(os.environ) == env_snapshot
+
+    assert any("rev-parse" in c["argv"] for c in captured)
+    assert any("log" in c["argv"] for c in captured)
+
+    expected_env = dict(env_snapshot)
+    expected_env.pop("GIT_DIR", None)
+    expected_env.pop("GIT_WORK_TREE", None)
+    expected_env.pop("GIT_INDEX_FILE", None)
+    expected_env["GIT_NO_LAZY_FETCH"] = "1"
+
+    for call in captured:
+        assert call["env"] == expected_env
+
+    by_path = {e.note_path: e for e in result}
+    assert by_path["twice.md"].modified == _iso(git_vault.note_times["twice.md"])
+
+
+def test_treeless_partial_clone_never_lazy_fetches(tmp_path: Path) -> None:
+    source_root, source_env, _source_sentinel = _setup_repo(tmp_path, "repo-source")
+    _git(source_root, "config", "uploadpack.allowFilter", "true", env=source_env)
+
+    now = datetime.now(UTC)
+    older_time = now - timedelta(days=4)
+    newer_time = now - timedelta(days=1)
+
+    (source_root / "a.md").write_text("content a\n", encoding="utf-8")
+    _commit(source_root, source_env, older_time, "commit a")
+
+    (source_root / "b.md").write_text("content b\n", encoding="utf-8")
+    _commit(source_root, source_env, newer_time, "commit b")
+
+    clone_env = dict(source_env)
+    clone_env.pop("GIT_NO_LAZY_FETCH", None)
+    clone_root = tmp_path / "repo-clone"
+    _git(
+        tmp_path,
+        "clone",
+        "--filter=tree:0",
+        f"file://{source_root}",
+        str(clone_root),
+        env=clone_env,
+    )
+
+    sentinel = tmp_path / "clone-uploadpack-sentinel"
+    script = tmp_path / "clone-fake-uploadpack.sh"
+    script.write_text(f"#!/bin/sh\n: > {sentinel}\nexit 1\n", encoding="utf-8")
+    script.chmod(0o755)
+    _git(clone_root, "config", "remote.origin.uploadpack", str(script), env=clone_env)
+
+    (clone_root / CONTEXT_FILE).write_text("work\n", encoding="utf-8")
+    config = RagmarkConfig.for_vault(clone_root)
+
+    result = recent_activity(config=config)
+
+    assert not sentinel.exists()
+    by_path = {e.note_path: e for e in result}
+    assert "a.md" in by_path
+    assert "b.md" in by_path
+    assert by_path["a.md"].modified != _iso(older_time)
 
 
 def test_same_commit_tie_break_by_note_path_ascending(git_vault) -> None:

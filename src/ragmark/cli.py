@@ -249,12 +249,15 @@ def _run_golden(
 ) -> int:
     """Evaluate the golden set against live search; gate on --min-recall.
 
-    Refreshes the index once up front, then fingerprints the corpus before
-    and after the evaluation loop: a corpus that changes mid-run (a live
-    vault edited in another window) would otherwise be silently measured as
-    one corpus (issue #121). A reading taken before that first refresh would
-    instead flag every run against a stale-at-start index as drift, so the
-    "before" reading is deliberately taken after it.
+    Loads and validates the golden set against `config.vault_root` first, so
+    a stale `expect` path fails loud before any index work runs (issue
+    #145), rather than silently scoring 0.0. Only then does it refresh the
+    index once up front and fingerprint the corpus before and after the
+    evaluation loop: a corpus that changes mid-run (a live vault edited in
+    another window) would otherwise be silently measured as one corpus
+    (issue #121). A reading taken before that first refresh would instead
+    flag every run against a stale-at-start index as drift, so the "before"
+    reading is deliberately taken after it.
     """
 
     def search_notes(query: str, k: int) -> list[str]:
@@ -267,10 +270,15 @@ def _run_golden(
                 ranked_notes.append(hit.note_path)
         return ranked_notes
 
+    try:
+        queries = golden.load_golden(args.file, vault_root=config.vault_root)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     index.refresh(config, store, embedder)
     notes_before, chunks_before = _corpus_fingerprint(store)
 
-    queries = golden.load_golden(args.file)
     report = golden.evaluate(queries, search_notes)
     provenance = _gather_golden_provenance(args, config, store, embedder, len(queries))
     notes_after, chunks_after = provenance.note_count, provenance.chunk_count
@@ -290,10 +298,10 @@ def _run_golden(
         try:
             baseline_data = json.loads(baseline_path.read_text(encoding="utf-8"))
             baseline_report = golden.report_from_dict(baseline_data)
-        except (OSError, ValueError) as exc:
+            regressions = [r for r in golden.diff_reports(baseline_report, report) if r.delta < 0]
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        regressions = [r for r in golden.diff_reports(baseline_report, report) if r.delta < 0]
         print("regressions vs baseline:")
         if regressions:
             for regression in regressions:
