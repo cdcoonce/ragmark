@@ -151,7 +151,11 @@ def main() -> int:
             report = run(config, store, embedder)
             print(_json_dump(report))
         elif args.command == "gaps":
-            pairs = gaps.gaps(config=config, threshold=args.threshold)
+            try:
+                pairs = gaps.gaps(config=config, threshold=args.threshold)
+            except FileNotFoundError as error:
+                print(f"error: {error}", file=sys.stderr)
+                return 1
             print(json.dumps(pairs, indent=2))
         elif args.command == "mcp":
             from ragmark.mcp import serve
