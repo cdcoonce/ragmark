@@ -94,6 +94,8 @@ class IndexStore:
         self.index_dir = index_dir
         self.db_path = index_dir / "ragmark.db"
         self.vectors_path = index_dir / "vectors.npy"
+        # At most one loaded matrix, keyed by the vectors file's (st_mtime_ns, st_size).
+        self._vectors_cache: tuple[tuple[int, int], Any] | None = None
 
     def connect(self) -> sqlite3.Connection:
         """Open (creating if needed) the metadata database."""
@@ -245,11 +247,27 @@ class IndexStore:
         buffer = io.BytesIO()
         np.save(buffer, np.asarray(vectors, dtype=np.float32))
         atomic_write_bytes(self.vectors_path, buffer.getvalue())
+        # Same-size, same-mtime rewrites share a key; only a drop forces the reload.
+        self._vectors_cache = None
 
     def load_vectors(self) -> Any | None:
-        """Load the vector matrix, or None when absent (unbuilt index)."""
-        if not self.vectors_path.exists():
+        """Load the vector matrix, or None when absent (unbuilt index).
+
+        Cached per store under the file's (st_mtime_ns, st_size). A hit returns the
+        cached array itself, so callers must not write to it. The key is taken before
+        the load: an atomic rewrite landing mid-load then pairs old data with the old
+        key and reloads next time, never new key with old data.
+        """
+        try:
+            stat = self.vectors_path.stat()
+        except FileNotFoundError:
+            self._vectors_cache = None
             return None
+        key = (stat.st_mtime_ns, stat.st_size)
+        if self._vectors_cache is not None and self._vectors_cache[0] == key:
+            return self._vectors_cache[1]
         import numpy as np
 
-        return np.load(self.vectors_path)
+        matrix = np.load(self.vectors_path)
+        self._vectors_cache = (key, matrix)
+        return matrix
