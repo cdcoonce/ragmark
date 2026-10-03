@@ -58,6 +58,8 @@ packages = ["src/ragmark"]
 include = [
     "src/ragmark",
     "tests",
+    "configs/the-vault.toml",
+    "scripts/check_absorption_exit.py",
     "docs/ROADMAP.md",
     "README.md",
     "CHANGELOG.md",

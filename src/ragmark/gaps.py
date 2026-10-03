@@ -11,6 +11,8 @@ faithfully. Deliberate differences from that source:
 3. Context gating — ``gaps()`` filters its targets, every similarity candidate, and every
    dismissal record through ``gate.filter_visible``, so a note outside the active machine
    context is never scored, hashed, or returned.
+4. Corpus scope — the shared graph adapter excludes configured non-content before
+   names and aliases are resolved (ragmark#94's approved owner corpus policy).
 
 What stays in graphmark: the deterministic graph itself — this module
 consumes graphmark for structure (degree/hub facts, linked-pair queries) and
@@ -25,11 +27,10 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from pathlib import Path
 
-import graphmark
 from graphmark.graph import VaultGraph
 from graphmark.interfaces import Similarity
 
-from ragmark import dismiss, gate, search
+from ragmark import _graph, dismiss, gate, search
 from ragmark.config import RagmarkConfig
 from ragmark.store import IndexStore
 
@@ -139,7 +140,7 @@ def gaps(
     dismissal_store: Path | None = None,
 ) -> list[tuple[str, str, float]]:
     """Ranked unlinked-but-similar note pairs (see module contract)."""
-    graph = graphmark.build(config.vault_root)
+    graph = _graph.build_graph(config)
 
     store = IndexStore(config.index_dir)
     # Both checks are needed: ``search.similar_notes`` returns [] on a missing index, and
@@ -155,8 +156,8 @@ def gaps(
         try:
             candidates = search.similar_notes(rel, limit, config=config, store=store)
         except gate.VaultAccessError:
-            # graphmark.build uses its default VaultConfig, so graph.nodes holds notes the
-            # gate refuses (dot-directories, excluded_dirs); they have no neighbours here.
+            # A note can become unavailable between graph construction and search.
+            # Only access refusals are skipped; index and computation errors propagate.
             return []
         visible = set(gate.filter_visible([other for other, _ in candidates], config))
         return [(other, score) for other, score in candidates if other in visible]

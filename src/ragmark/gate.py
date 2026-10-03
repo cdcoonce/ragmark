@@ -66,16 +66,45 @@ def active_context(config: RagmarkConfig) -> str:
 def is_indexable_note(resolved: Path, config: RagmarkConfig) -> bool:
     """True when *resolved* (inside the vault) is graph content.
 
-    Markdown only; nothing under a dot-directory (`.claude/`, `.git/`,
-    `.ragmark/` stay unreachable); nothing under an excluded directory.
+    Markdown only; hidden paths and configured exclusions stay unreachable.
+    Optional owner scope is applied before indexing or exposing stored results
+    (ragmark#94, owner decision 2026-10-03).
     """
     if resolved.suffix.lower() != ".md":
         return False
-    rel_parts = resolved.relative_to(config.vault_root).parts
+    rel = resolved.relative_to(config.vault_root)
+    rel_parts = rel.parts
+    if config.scoped_folders and (len(rel_parts) < 2 or rel_parts[0] not in config.scoped_folders):
+        return False
+    if rel_parts[-1] in config.excluded_filenames:
+        return False
+    if rel.as_posix().startswith(config.excluded_path_prefixes):
+        return False
     for part in rel_parts[:-1]:
         if part.startswith(".") or part in config.excluded_dirs:
             return False
     return not rel_parts[-1].startswith(".")
+
+
+def _has_exact_spelling(root: Path, relative: Path) -> bool:
+    """Refuse filesystem aliases without changing literal owner policy.
+
+    On case-insensitive filesystems resolve() can retain the caller's casing.
+    Check directory entries rather than folding configured names: a real
+    `agents.md` must still be distinct from the excluded literal `AGENTS.md`.
+    """
+    current = root
+    try:
+        for part in relative.parts:
+            if part == "..":
+                current = current.parent
+                continue
+            if not any(entry.name == part for entry in current.iterdir()):
+                return False
+            current /= part
+    except OSError:
+        return False
+    return True
 
 
 def resolve_note(rel_path: str, config: RagmarkConfig) -> Path:
@@ -104,10 +133,21 @@ def resolve_note(rel_path: str, config: RagmarkConfig) -> Path:
         raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
     if not resolved.is_file():
         raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
+    if not _has_exact_spelling(root, Path(rel_path)) or not _has_exact_spelling(
+        root, resolved.relative_to(root)
+    ):
+        raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
+    if not is_indexable_note(root / rel_path, config):
+        raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
     if not is_indexable_note(resolved, config):
         raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
     rel = resolved.relative_to(root).as_posix()
-    if not visible_in_context(rel, active_context(config), config):
+    context = active_context(config)
+    # A stored personal path remains private even if it now aliases shared
+    # content; a shared alias must likewise never expose a private target.
+    if not visible_in_context(rel_path, context, config) or not visible_in_context(
+        rel, context, config
+    ):
         raise VaultAccessError(_UNAVAILABLE.format(rel_path=rel_path))
     return resolved
 
@@ -118,6 +158,16 @@ def read_note(rel_path: str, config: RagmarkConfig) -> str:
 
 
 def filter_visible(rel_paths: list[str], config: RagmarkConfig) -> list[str]:
-    """Keep only the paths visible in the active context, preserving order."""
-    context = active_context(config)
-    return [p for p in rel_paths if visible_in_context(p, context, config)]
+    """Keep readable corpus paths visible in the active context, in order.
+
+    Stored rows may predate a corpus-policy change; filter them through the
+    same resolve/contain/scope boundary as direct reads before exposing them.
+    """
+    visible: list[str] = []
+    for path in rel_paths:
+        try:
+            resolve_note(path, config)
+        except VaultAccessError:
+            continue
+        visible.append(path)
+    return visible

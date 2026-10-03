@@ -955,7 +955,15 @@ def test_golden_subparser_adds_no_opt_out_argument() -> None:
     parser = _build_parser()
 
     args = parser.parse_args(["golden", "--file", "g.toml"])
-    assert set(vars(args)) == {"vault", "command", "file", "min_recall", "baseline", "fusion"}
+    assert set(vars(args)) == {
+        "vault",
+        "config",
+        "command",
+        "file",
+        "min_recall",
+        "baseline",
+        "fusion",
+    }
 
     subparsers_action = next(
         action
@@ -971,7 +979,7 @@ def test_golden_subparser_adds_no_opt_out_argument() -> None:
         "fusion",
     ]
 
-    assert [action.dest for action in parser._actions] == ["help", "vault", "command"]  # type: ignore[union-attr]
+    assert [action.dest for action in parser._actions] == ["help", "vault", "config", "command"]  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(

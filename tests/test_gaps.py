@@ -23,7 +23,7 @@ import graphmark
 import graphmark.metrics
 import pytest
 
-from ragmark import dismiss, gaps, gate, search
+from ragmark import _graph, dismiss, gaps, gate, neighbors, search
 from ragmark.config import CONTEXT_FILE, RagmarkConfig
 
 FIXTURE_VAULT = Path(__file__).parent / "fixtures" / "gaps" / "vault"
@@ -243,9 +243,10 @@ def test_gaps_py_source_has_no_disallowed_graphmark_or_networkx_references() -> 
     # The ranking core stays under the full ban.
     for fn in (gaps.rank_pairs, gaps._degrees):
         assert _scan_violations(textwrap.dedent(inspect.getsource(fn))) == []
-    # The module as a whole gets exactly the two allowances `gaps()` needs.
+    # Graph construction lives in the shared adapter; only dismissal orchestration
+    # needs an allowance outside the independent ranking core.
     source = Path(gaps.__file__).read_text()
-    assert set(_scan_violations(source)) <= {"import graphmark", "name dismiss"}
+    assert set(_scan_violations(source)) <= {"name dismiss"}
 
 
 def test_scan_violations_catches_bad_import() -> None:
@@ -334,6 +335,48 @@ def test_gaps_returns_ranked_visible_pairs(tmp_path: Path, monkeypatch: pytest.M
     config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
     _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.81234567))
     assert gaps.gaps(config=config) == [("brain/a.md", "brain/b.md", 0.8123)]
+
+
+@pytest.mark.parametrize(
+    ("policy", "excluded", "link"),
+    [
+        ({"scoped_folders": ("brain",)}, "outside/target.md", "target"),
+        ({"scoped_folders": ("brain",)}, "outside/copy.md", "Friendly"),
+        ({"excluded_filenames": ("AGENTS.md",)}, "brain/AGENTS.md", "Friendly"),
+        ({"excluded_path_prefixes": ("brain/archive/",)}, "brain/archive/target.md", "target"),
+        ({"excluded_path_prefixes": ("brain/archive/",)}, "brain/archive/copy.md", "Friendly"),
+        ({"excluded_dirs": frozenset({"snapshots"})}, "snapshots/target.md", "target"),
+        ({}, ".hidden/target.md", "target"),
+        ({}, "brain/.hidden.md", "Friendly"),
+    ],
+)
+def test_excluded_duplicates_cannot_turn_existing_links_into_gaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: dict, excluded: str, link: str
+) -> None:
+    config = dataclasses.replace(
+        _make_vault(tmp_path, ["brain/origin.md", "brain/target.md"]), **policy
+    )
+    (config.vault_root / "brain/origin.md").write_text(f"[[{link}]]\n")
+    target_text = "---\naliases: [Friendly]\n---\nExisting linked note.\n"
+    (config.vault_root / "brain/target.md").write_text(target_text)
+    _stub_similar(monkeypatch, _both_ways("brain/origin.md", "brain/target.md", 0.8))
+    assert gaps.gaps(config=config) == []  # linked pairs are not suggestions
+
+    duplicate = config.vault_root / excluded
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate.write_text(target_text)
+    parsed: list[str] = []
+    real_parse = graphmark.parse_document
+
+    def record_parse(path: Path, root: Path):
+        parsed.append(path.relative_to(root).as_posix())
+        return real_parse(path, root)
+
+    monkeypatch.setattr(graphmark, "parse_document", record_parse)
+    monkeypatch.setattr(graphmark.graph, "parse_document", record_parse)
+
+    assert gaps.gaps(config=config) == []  # excluded names never enter the catalog
+    assert set(parsed) == {"brain/origin.md", "brain/target.md"}
 
 
 @pytest.mark.gating
@@ -569,21 +612,28 @@ def test_a_search_error_that_is_not_a_gate_refusal_propagates(
         gaps.gaps(config=config)
 
 
-def test_graph_is_built_once_from_the_vault_root_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("surface", ["gaps", "neighbors"])
+def test_graph_is_built_once_with_complete_config_through_shared_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    # #94's owner scope supersedes #149's root-only construction assertion.
+    config = dataclasses.replace(
+        _make_vault(tmp_path, ["brain/a.md", "brain/b.md"]), scoped_folders=("brain",)
+    )
     _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    real_build = graphmark.build
+    calls: list[RagmarkConfig] = []
+    real_build = _graph.build_graph
 
-    def spy(*args: object, **kwargs: object):
-        calls.append((args, kwargs))
-        return real_build(*args, **kwargs)
+    def spy(config: RagmarkConfig):
+        calls.append(config)
+        return real_build(config)
 
-    monkeypatch.setattr(graphmark, "build", spy)
-    gaps.gaps(config=config)
-    assert calls == [((config.vault_root,), {})]
+    monkeypatch.setattr(_graph, "build_graph", spy)
+    if surface == "gaps":
+        gaps.gaps(config=config)
+    else:
+        neighbors.vault_neighbors("brain/a.md", config=config)
+    assert calls == [config]
 
 
 @pytest.mark.parametrize("deleted", ["a", "b"])

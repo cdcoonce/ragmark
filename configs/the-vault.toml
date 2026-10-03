@@ -6,7 +6,20 @@
 vault_root = "../../the-vault"
 
 # Directories never indexed (dot-directories are always excluded).
-excluded_dirs = ["templates"]
+excluded_dirs = ["templates", "session-logs"]
+
+# Owner corpus policy, approved in ragmark#94 on 2026-10-03. These are literal
+# names/prefixes, not globs. Root operating files are outside the folder scope.
+scoped_folders = ["brain", "work", "personal", "org", "perf", "reference", "school", "thinking"]
+excluded_filenames = ["AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"]
+excluded_path_prefixes = [
+    "work/Tasks.md",
+    "personal/tasks/",
+    "personal/archive/tasks/",
+    "work/tasks/",
+    "work/archive/tasks/",
+    "work/archive/2026/tasks/",
+]
 
 [context_dirs]
 work = "work"
