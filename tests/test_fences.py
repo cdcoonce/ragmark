@@ -94,6 +94,12 @@ def test_closer_followed_by_other_character_is_content() -> None:
     assert find_fences(["```", "```x", "```"]) == ([(0, 2)], [])
 
 
+def test_closer_followed_by_non_breaking_space_is_content() -> None:
+    # U+00A0 is whitespace to str.isspace and to re's \s, but not to the
+    # spaces-or-tabs rule, so a closer followed by it is content.
+    assert find_fences(["```", "```\u00a0", "```"]) == ([(0, 2)], [])
+
+
 # --- demote-and-rescan ------------------------------------------------------
 
 
@@ -115,6 +121,11 @@ def test_unterminated_fence_line_reports_the_demoted_opener() -> None:
 
 def test_unterminated_fence_line_is_none_for_a_balanced_tilde_fence() -> None:
     body = "# A\n\n~~~\n# not heading\n~~~\n\n# B\n\nx\n"
+    assert unterminated_fence_line(body) is None
+
+
+def test_unterminated_fence_line_is_none_for_a_balanced_crlf_tilde_fence() -> None:
+    body = "# A\r\n\r\n~~~\r\n# x\r\n~~~\r\n\r\n# B\r\n\r\ny\r\n"
     assert unterminated_fence_line(body) is None
 
 
