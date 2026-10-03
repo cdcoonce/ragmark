@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 from ragmark import chunk, gaps, neighbors, search
-from ragmark.config import RagmarkConfig
 
 OWED = pytest.mark.xfail(strict=True, raises=NotImplementedError, reason="owed to a build slice")
 
@@ -50,12 +49,6 @@ def test_release_relock_names_this_package() -> None:
 
 
 # --- owed behavior ----------------------------------------------------------
-
-
-def seed_config(tmp_path: Path) -> RagmarkConfig:
-    vault = tmp_path / "vault"
-    vault.mkdir(exist_ok=True)
-    return RagmarkConfig.for_vault(vault)
 
 
 def test_exactly_zero_owed_behaviors_remain() -> None:

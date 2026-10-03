@@ -8,7 +8,6 @@ faithfully. Deliberate differences from that source:
    tuples; a caller that needs the dismissal-store key recomputes it (see
    the module-private ``_sig`` below).
 2. No path-prefix exclusion — no ``exclude_prefixes`` parameter.
-
 3. Context gating — ``gaps()`` filters its targets, every similarity candidate, and every
    dismissal record through ``gate.filter_visible``, so a note outside the active machine
    context is never scored, hashed, or returned.

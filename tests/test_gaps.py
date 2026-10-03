@@ -444,7 +444,10 @@ def _snapshot(directory: Path) -> list[str]:
 
 
 def _stub_must_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    def must_not_run(*args: object, **kwargs: object) -> list:
+        raise AssertionError("search ran before the index check")
+
+    monkeypatch.setattr(search, "similar_notes", must_not_run)
 
 
 def test_missing_index_dir_raises_and_is_not_created(
@@ -455,7 +458,7 @@ def test_missing_index_dir_raises_and_is_not_created(
     with pytest.raises(FileNotFoundError) as excinfo:
         gaps.gaps(config=config)
     assert str(config.index_dir) in str(excinfo.value)
-    assert "ragmark index" in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
     assert not config.index_dir.exists()
 
 
@@ -467,7 +470,7 @@ def test_index_with_only_vectors_raises(tmp_path: Path, monkeypatch: pytest.Monk
     with pytest.raises(FileNotFoundError) as excinfo:
         gaps.gaps(config=config)
     assert str(config.index_dir) in str(excinfo.value)
-    assert "ragmark index" in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
     assert _snapshot(config.index_dir) == before == ["vectors.npy"]
 
 
@@ -479,7 +482,7 @@ def test_index_with_only_db_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     with pytest.raises(FileNotFoundError) as excinfo:
         gaps.gaps(config=config)
     assert str(config.index_dir) in str(excinfo.value)
-    assert "ragmark index" in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
     assert _snapshot(config.index_dir) == before == ["ragmark.db"]
 
 
@@ -544,16 +547,17 @@ def test_arguments_are_forwarded_to_rank_pairs_and_search(
     assert ks == [3]
 
 
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError, KeyError, ValueError])
 def test_a_search_error_that_is_not_a_gate_refusal_propagates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
 ) -> None:
     config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
 
     def boom(note_path: str, k: int = 8, *, config: RagmarkConfig, store: object) -> list:
-        raise RuntimeError("index exploded")
+        raise error_type("index exploded")
 
     monkeypatch.setattr(search, "similar_notes", boom)
-    with pytest.raises(RuntimeError, match="index exploded"):
+    with pytest.raises(error_type, match="index exploded"):
         gaps.gaps(config=config)
 
 
