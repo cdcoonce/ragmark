@@ -11,15 +11,19 @@ offered as similar to itself.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
+import json
+import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 import graphmark
 import graphmark.metrics
 import pytest
 
-from ragmark import gaps
-from ragmark.config import RagmarkConfig
+from ragmark import dismiss, gaps, gate, search
+from ragmark.config import CONTEXT_FILE, RagmarkConfig
 
 FIXTURE_VAULT = Path(__file__).parent / "fixtures" / "gaps" / "vault"
 
@@ -172,14 +176,6 @@ def test_selfsim_note_never_pairs_with_itself() -> None:
     assert not any("selfsim.md" in (a, b) for a, b, _ in result)
 
 
-def test_gaps_still_raises_not_implemented(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    vault.mkdir()
-    config = RagmarkConfig.for_vault(vault)
-    with pytest.raises(NotImplementedError):
-        gaps.gaps(config=config)
-
-
 def test_rank_pairs_signature_has_no_defaults_and_no_extra_params() -> None:
     sig = inspect.signature(gaps.rank_pairs)
     params = list(sig.parameters.values())
@@ -236,9 +232,395 @@ def _scan_violations(source: str) -> list[str]:
 
 
 def test_gaps_py_source_has_no_disallowed_graphmark_or_networkx_references() -> None:
-    source = Path("src/ragmark/gaps.py").read_text()
-    assert _scan_violations(source) == []
+    # The ranking core stays under the full ban.
+    for fn in (gaps.rank_pairs, gaps._degrees):
+        assert _scan_violations(textwrap.dedent(inspect.getsource(fn))) == []
+    # The module as a whole gets exactly the two allowances `gaps()` needs.
+    source = Path(gaps.__file__).read_text()
+    assert set(_scan_violations(source)) <= {"import graphmark", "name dismiss"}
 
 
 def test_scan_violations_catches_bad_import() -> None:
     assert _scan_violations("from graphmark import gaps\n") != []
+
+
+# --- gaps(): the public entry point (the-vault#143 d2, ragmark#149) ----------------------
+
+SimilarFn = Callable[..., list[tuple[str, float]]]
+
+_DEFAULT_STORE = ".claude/data/connect-dismissed.json"
+
+
+def _note_text(rel: str) -> str:
+    return f"# {rel}\n\nBody of {rel}.\n"
+
+
+def _make_vault(
+    tmp_path: Path,
+    notes: list[str],
+    *,
+    context: str | None = None,
+    excluded_dirs: frozenset[str] = frozenset(),
+    with_index: bool = True,
+) -> RagmarkConfig:
+    """A throwaway vault under *tmp_path*, an index dir beside it, and its config.
+
+    The index files are empty placeholders: gaps() checks existence only, and every test
+    stubs ``search.similar_notes`` (no embedding model is ever involved).
+    """
+    vault = tmp_path / "vault"
+    for rel in notes:
+        path = vault / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_note_text(rel), encoding="utf-8")
+    vault.mkdir(exist_ok=True)
+    if context is not None:
+        (vault / CONTEXT_FILE).write_text(context + "\n", encoding="utf-8")
+    index_dir = tmp_path / "index"
+    if with_index:
+        index_dir.mkdir()
+        (index_dir / "ragmark.db").write_bytes(b"")
+        (index_dir / "vectors.npy").write_bytes(b"")
+    config = RagmarkConfig.for_vault(vault, index_dir=index_dir)
+    return dataclasses.replace(config, excluded_dirs=excluded_dirs)
+
+
+def _stub_similar(
+    monkeypatch: pytest.MonkeyPatch,
+    table: dict[str, list[tuple[str, float]]],
+    *,
+    resolve: bool = False,
+    ks: list[int] | None = None,
+) -> None:
+    """Replace ``search.similar_notes`` (the module attribute) with a table lookup.
+
+    ``resolve=True`` mimics the real function's first act: gating the source note through
+    ``gate.resolve_note``, which raises ``VaultAccessError`` for a refused target.
+    """
+
+    def fake(
+        note_path: str, k: int = 8, *, config: RagmarkConfig, store: object
+    ) -> list[tuple[str, float]]:
+        if ks is not None:
+            ks.append(k)
+        if resolve:
+            gate.resolve_note(note_path, config)
+        return list(table.get(note_path, []))[:k]
+
+    monkeypatch.setattr(search, "similar_notes", fake)
+
+
+def _pairs(result: list[tuple[str, str, float]]) -> set[frozenset[str]]:
+    return {frozenset((a, b)) for a, b, _ in result}
+
+
+def _pair(a: str, b: str) -> frozenset[str]:
+    return frozenset((a, b))
+
+
+def _both_ways(a: str, b: str, score: float) -> dict[str, list[tuple[str, float]]]:
+    return {a: [(b, score)], b: [(a, score)]}
+
+
+def test_gaps_returns_ranked_visible_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.81234567))
+    assert gaps.gaps(config=config) == [("brain/a.md", "brain/b.md", 0.8123)]
+
+
+@pytest.mark.gating
+def test_gaps_returns_only_context_visible_notes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    notes = [
+        "work/a.md",
+        "work/b.md",
+        "work/c.md",
+        "work/d.md",
+        "work/v1.md",
+        "work/v2.md",
+        "work/x.md",
+        "work/y.md",
+        "personal/p.md",
+    ]
+    config = _make_vault(tmp_path, notes, context="work")
+    root = config.vault_root
+    # Visible, in-band, unlinked, undismissed pair: must survive a hidden dismissal record.
+    # personal/p.md is the most similar candidate of work/c.md AND a key of its own with
+    # an in-band visible candidate (so dropping the targets filter makes it a ranked target).
+    # The stub never calls gate.resolve_note, so a refusal cannot mask a missing filter.
+    table = {
+        "work/a.md": [("work/b.md", 0.8)],
+        "work/c.md": [("personal/p.md", 0.9), ("work/d.md", 0.7)],
+        "personal/p.md": [("work/d.md", 0.8)],
+        "work/v1.md": [("work/v2.md", 0.75)],
+    }
+    _stub_similar(monkeypatch, table)
+
+    # Two dismissals against the hidden note (once as `a`, once as `b`), one visible pair.
+    dismiss.record_dismissal(root, "personal/p.md", "work/x.md")
+    dismiss.record_dismissal(root, "work/y.md", "personal/p.md")
+    dismiss.record_dismissal(root, "work/v1.md", "work/v2.md")
+
+    hashed: list[Path] = []
+    real_hash = dismiss.content_hash
+
+    def spy(path: Path) -> str:
+        hashed.append(path)
+        return real_hash(path)
+
+    monkeypatch.setattr(dismiss, "content_hash", spy)
+    work_result = gaps.gaps(config=config)
+    monkeypatch.setattr(dismiss, "content_hash", real_hash)
+
+    work_pairs = _pairs(work_result)
+    assert not any("personal/p.md" in pair for pair in work_pairs)
+    assert _pair("work/a.md", "work/b.md") in work_pairs
+    assert _pair("work/c.md", "work/d.md") in work_pairs
+    assert _pair("work/v1.md", "work/v2.md") not in work_pairs  # dismissed, visible
+
+    hashed_rels = {Path(p).relative_to(root).as_posix() for p in hashed}
+    assert "personal/p.md" not in hashed_rels
+    assert {"work/v1.md", "work/v2.md"} <= hashed_rels  # the spy does fire
+
+    # Positive control: under the personal context the hidden note is visible.
+    (root / CONTEXT_FILE).write_text("personal\n", encoding="utf-8")
+    personal_pairs = _pairs(gaps.gaps(config=config))
+    assert _pair("work/c.md", "personal/p.md") in personal_pairs
+    assert _pair("personal/p.md", "work/d.md") in personal_pairs
+
+
+def test_default_dismissal_store_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/c.md", "brain/d.md"])
+    dismiss.record_dismissal(config.vault_root, "brain/a.md", "brain/b.md")
+    assert (config.vault_root / _DEFAULT_STORE).is_file()
+    table = {
+        **_both_ways("brain/a.md", "brain/b.md", 0.8),
+        **_both_ways("brain/c.md", "brain/d.md", 0.8),
+    }
+    _stub_similar(monkeypatch, table)
+    pairs = _pairs(gaps.gaps(config=config))
+    assert pairs == {_pair("brain/c.md", "brain/d.md")}
+
+
+def test_explicit_absolute_dismissal_store_outside_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/c.md", "brain/d.md"])
+    store = tmp_path / "outside" / "d.json"
+    dismiss.record_dismissal(config.vault_root, "brain/a.md", "brain/b.md", path=str(store))
+    assert store.is_file()
+    assert not (config.vault_root / _DEFAULT_STORE).exists()
+    table = {
+        **_both_ways("brain/a.md", "brain/b.md", 0.8),
+        **_both_ways("brain/c.md", "brain/d.md", 0.8),
+    }
+    _stub_similar(monkeypatch, table)
+    pairs = _pairs(gaps.gaps(config=config, dismissal_store=store))
+    assert pairs == {_pair("brain/c.md", "brain/d.md")}
+
+
+def test_explicit_relative_dismissal_store_resolves_against_vault_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/c.md", "brain/d.md"])
+    relative = Path("custom/d.json")
+    dismiss.record_dismissal(config.vault_root, "brain/a.md", "brain/b.md", path=str(relative))
+    assert (config.vault_root / relative).is_file()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    table = {
+        **_both_ways("brain/a.md", "brain/b.md", 0.8),
+        **_both_ways("brain/c.md", "brain/d.md", 0.8),
+    }
+    _stub_similar(monkeypatch, table)
+    pairs = _pairs(gaps.gaps(config=config, dismissal_store=relative))
+    assert pairs == {_pair("brain/c.md", "brain/d.md")}
+
+
+def _snapshot(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir())
+
+
+def _stub_must_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    def must_not_run(*args: object, **kwargs: object) -> list:
+        raise AssertionError("search ran before the index check")
+
+    monkeypatch.setattr(search, "similar_notes", must_not_run)
+
+
+def test_missing_index_dir_raises_and_is_not_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"], with_index=False)
+    _stub_must_not_run(monkeypatch)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        gaps.gaps(config=config)
+    assert str(config.index_dir) in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
+    assert not config.index_dir.exists()
+
+
+def test_index_with_only_vectors_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    (config.index_dir / "ragmark.db").unlink()
+    before = _snapshot(config.index_dir)
+    _stub_must_not_run(monkeypatch)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        gaps.gaps(config=config)
+    assert str(config.index_dir) in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
+    assert _snapshot(config.index_dir) == before == ["vectors.npy"]
+
+
+def test_index_with_only_db_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    (config.index_dir / "vectors.npy").unlink()
+    before = _snapshot(config.index_dir)
+    _stub_must_not_run(monkeypatch)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        gaps.gaps(config=config)
+    assert str(config.index_dir) in str(excinfo.value)
+    assert "run `ragmark index`" in str(excinfo.value)
+    assert _snapshot(config.index_dir) == before == ["ragmark.db"]
+
+
+def test_target_refused_by_the_gate_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(
+        tmp_path,
+        [".claude/docs/x.md", "archive/y.md", "brain/a.md", "brain/b.md"],
+        excluded_dirs=frozenset({"archive"}),
+    )
+    # The refused notes are targets only, never another note's candidate.
+    table = {
+        ".claude/docs/x.md": [("brain/a.md", 0.8)],
+        "archive/y.md": [("brain/b.md", 0.8)],
+        **_both_ways("brain/a.md", "brain/b.md", 0.75),
+    }
+    _stub_similar(monkeypatch, table, resolve=True)
+    with pytest.raises(gate.VaultAccessError):  # the stub does refuse them, as the real one does
+        search.similar_notes(".claude/docs/x.md", 8, config=config, store=None)  # type: ignore[call-arg]
+    result = gaps.gaps(config=config)
+    assert _pairs(result) == {_pair("brain/a.md", "brain/b.md")}
+    assert not any(".claude/docs/x.md" in (a, b) or "archive/y.md" in (a, b) for a, b, _ in result)
+
+
+@pytest.mark.parametrize("edited", ["a", "b"])
+def test_edited_note_makes_a_dismissed_pair_reappear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edited: str
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    dismiss.record_dismissal(config.vault_root, "brain/a.md", "brain/b.md")
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    assert gaps.gaps(config=config) == []  # both unedited: dismissal active
+    victim = config.vault_root / f"brain/{edited}.md"
+    victim.write_text(victim.read_text() + "\nEdited after the dismissal.\n", encoding="utf-8")
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_arguments_are_forwarded_to_rank_pairs_and_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    ks: list[int] = []
+    _stub_similar(monkeypatch, {}, ks=ks)
+    seen: list[dict[str, object]] = []
+
+    def recorder(graph: object, similar_fn: SimilarFn, **kwargs: object) -> list:
+        kwargs["_targets_first"] = kwargs["targets"][0]  # type: ignore[index]
+        seen.append(kwargs)
+        similar_fn(kwargs["_targets_first"], kwargs["k"])
+        return []
+
+    monkeypatch.setattr(gaps, "rank_pairs", recorder)
+    result = gaps.gaps(config=config, threshold=0.7, max_score=0.9, k=3, hub_degree=2)
+    assert result == []
+    assert len(seen) == 1
+    kwargs = seen[0]
+    assert kwargs["threshold"] == 0.7
+    assert kwargs["max_score"] == 0.9
+    assert kwargs["k"] == 3
+    assert kwargs["hub_degree"] == 2
+    assert ks == [3]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, OSError, KeyError, ValueError])
+def test_a_search_error_that_is_not_a_gate_refusal_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[Exception]
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+
+    def boom(note_path: str, k: int = 8, *, config: RagmarkConfig, store: object) -> list:
+        raise error_type("index exploded")
+
+    monkeypatch.setattr(search, "similar_notes", boom)
+    with pytest.raises(error_type, match="index exploded"):
+        gaps.gaps(config=config)
+
+
+def test_graph_is_built_once_from_the_vault_root_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    real_build = graphmark.build
+
+    def spy(*args: object, **kwargs: object):
+        calls.append((args, kwargs))
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(graphmark, "build", spy)
+    gaps.gaps(config=config)
+    assert calls == [((config.vault_root,), {})]
+
+
+@pytest.mark.parametrize("deleted", ["a", "b"])
+def test_dismissal_of_a_deleted_note_is_inactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deleted: str
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/c.md"])
+    dismiss.record_dismissal(config.vault_root, "brain/a.md", "brain/b.md")
+    (config.vault_root / f"brain/{deleted}.md").unlink()
+    survivor = "brain/b.md" if deleted == "a" else "brain/a.md"
+    _stub_similar(monkeypatch, _both_ways(survivor, "brain/c.md", 0.8))
+    assert _pairs(gaps.gaps(config=config)) == {_pair(survivor, "brain/c.md")}
+
+
+def test_malformed_dismissal_record_raises_key_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    store = config.vault_root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    sig = "weaklink|brain/a.md|brain/b.md"
+    store.write_text(json.dumps({sig: {"a": "brain/a.md", "b": "brain/b.md"}}))
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    with pytest.raises(KeyError):
+        gaps.gaps(config=config)
+
+
+def test_gaps_py_imports_collaborators_only_as_module_attributes() -> None:
+    tree = ast.parse(Path(gaps.__file__).read_text())
+    from_ragmark: set[str] = set()
+    forbidden = {"ragmark.embed", "ragmark.index", "ragmark.gate", "ragmark.search"}
+    forbidden |= {"ragmark.dismiss"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert not {alias.name for alias in node.names} & forbidden
+        elif isinstance(node, ast.ImportFrom):
+            assert node.module not in forbidden
+            if node.module == "ragmark":
+                from_ragmark |= {alias.name for alias in node.names}
+    assert {"dismiss", "gate", "search"} <= from_ragmark
+    assert not from_ragmark & {"embed", "index"}
+
+
+def test_module_docstring_lists_context_gating_as_difference_three() -> None:
+    doc = gaps.__doc__ or ""
+    assert "3. " in doc
+    assert "context gating" in doc.lower()
+    assert "A later slice appends" not in doc

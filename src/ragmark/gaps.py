@@ -8,8 +8,9 @@ faithfully. Deliberate differences from that source:
    tuples; a caller that needs the dismissal-store key recomputes it (see
    the module-private ``_sig`` below).
 2. No path-prefix exclusion — no ``exclude_prefixes`` parameter.
-
-A later slice appends context gating as difference 3.
+3. Context gating — ``gaps()`` filters its targets, every similarity candidate, and every
+   dismissal record through ``gate.filter_visible``, so a note outside the active machine
+   context is never scored, hashed, or returned.
 
 What stays in graphmark: the deterministic graph itself — this module
 consumes graphmark for structure (degree/hub facts, linked-pair queries) and
@@ -24,16 +25,22 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from pathlib import Path
 
+import graphmark
 from graphmark.graph import VaultGraph
 from graphmark.interfaces import Similarity
 
+from ragmark import dismiss, gate, search
 from ragmark.config import RagmarkConfig
+from ragmark.store import IndexStore
 
 # Banding policy, verbatim from graphmark metrics.py at migration decision time.
 GAPS_DEFAULT_THRESHOLD = 0.6
 GAPS_DEFAULT_MAX_SCORE = 0.92
 GAPS_DEFAULT_K = 8
 GAPS_DEFAULT_HUB_DEGREE = 40
+
+# graphmark's dismissal-store default, relative to the vault root.
+_DEFAULT_DISMISSAL_STORE = ".claude/data/connect-dismissed.json"
 
 
 def _sig(a: str, b: str) -> str:
@@ -120,4 +127,51 @@ def gaps(
     dismissal_store: Path | None = None,
 ) -> list[tuple[str, str, float]]:
     """Ranked unlinked-but-similar note pairs (see module contract)."""
-    raise NotImplementedError("build slice: gap policy migration (the-vault#143 d2)")
+    graph = graphmark.build(config.vault_root)
+
+    store = IndexStore(config.index_dir)
+    # Both checks are needed: ``search.similar_notes`` returns [] on a missing index, and
+    # ``IndexStore.connect`` would create the directory.
+    if not store.db_path.exists() or not store.vectors_path.exists():
+        raise FileNotFoundError(
+            f"no ragmark index at {config.index_dir}; run `ragmark index` first"
+        )
+
+    targets = gate.filter_visible(list(graph.nodes), config)
+
+    def similar_fn(rel: str, limit: int) -> list[tuple[str, float]]:
+        try:
+            candidates = search.similar_notes(rel, limit, config=config, store=store)
+        except gate.VaultAccessError:
+            # graphmark.build uses its default VaultConfig, so graph.nodes holds notes the
+            # gate refuses (dot-directories, excluded_dirs); they have no neighbours here.
+            return []
+        visible = set(gate.filter_visible([other for other, _ in candidates], config))
+        return [(other, score) for other, score in candidates if other in visible]
+
+    store_path = config.vault_root / (dismissal_store or _DEFAULT_DISMISSAL_STORE)
+    records = dismiss.load_dismissed(config.vault_root, path=str(store_path))
+    dismissed: set[str] = set()
+    for sig, record in records.items():
+        if len(gate.filter_visible([record["a"], record["b"]], config)) != 2:
+            continue
+        a_path = config.vault_root / record["a"]
+        b_path = config.vault_root / record["b"]
+        if (
+            a_path.exists()
+            and b_path.exists()
+            and dismiss.content_hash(a_path) == record["a_hash"]
+            and dismiss.content_hash(b_path) == record["b_hash"]
+        ):
+            dismissed.add(sig)
+
+    return rank_pairs(
+        graph,
+        similar_fn,
+        threshold=threshold,
+        max_score=max_score,
+        k=k,
+        hub_degree=hub_degree,
+        dismissed=dismissed,
+        targets=targets,
+    )
