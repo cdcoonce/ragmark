@@ -187,3 +187,65 @@ def test_pieces_split_from_one_section_share_heading_and_parent_ref() -> None:
     big_pieces = [c for c in chunks if c.heading == "Big"]
     assert len(big_pieces) > 1
     assert all(c.parent_ref == "A" for c in big_pieces)
+
+
+# --- fence recovery (tilde, unterminated, mismatched) -----------------------
+
+
+def _checked_headings(body: str) -> list[str]:
+    meta = NoteMeta(None, (), ())
+    chunks = chunk_note("fence.md", body, meta, count_tokens=fake_count_tokens)
+    assert_ceiling_and_token_count(chunks, fake_count_tokens)
+    assert_conservation(chunks, body, meta)
+    return list(dict.fromkeys(c.heading for c in chunks))
+
+
+def test_tilde_fence_hash_line_is_not_a_heading() -> None:
+    body = "# A\n\n~~~\n# not heading\n~~~\n\n# B\n\nx\n"
+    assert _checked_headings(body) == ["A", "B"]
+
+
+def test_unterminated_backtick_fence_keeps_later_headings() -> None:
+    body = "# A\n\n```\ncode\n\n# B\n\ntext\n\n# C\n\nmore\n"
+    assert _checked_headings(body) == ["A", "B", "C"]
+
+
+def test_unterminated_backtick_fence_keeps_later_headings_with_crlf() -> None:
+    body = "# A\r\n\r\n```\r\ncode\r\n\r\n# B\r\n\r\ntext\r\n\r\n# C\r\n\r\nmore\r\n"
+    assert _checked_headings(body) == ["A", "B", "C"]
+
+
+def test_balanced_crlf_tilde_fence_hides_its_hash_line() -> None:
+    body = "# A\r\n\r\n~~~\r\n# x\r\n~~~\r\n\r\n# B\r\n\r\ny\r\n"
+    assert _checked_headings(body) == ["A", "B"]
+
+
+def test_two_unclosed_openers_keep_the_heading_after_them() -> None:
+    body = "# A\n\n```\nx\n~~~\n# H\n"
+    assert _checked_headings(body) == ["A", "H"]
+
+
+def test_mismatched_tilde_then_backtick_closer_is_not_a_closer() -> None:
+    body = "# A\n\n~~~\n```\n~~~\n\n# B\n\nx\n"
+    assert _checked_headings(body) == ["A", "B"]
+
+
+def test_backtick_fence_containing_tilde_line_is_still_handled() -> None:
+    body = "# A\n\n```\n~~~\n# in\n```\n\n# B\n\nx\n"
+    assert _checked_headings(body) == ["A", "B"]
+
+
+def test_longer_backtick_fence_is_not_closed_by_shorter_run() -> None:
+    body = "# A\n\n````\n```\n# in\n````\n\n# B\n\nx\n"
+    assert _checked_headings(body) == ["A", "B"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="parse._FENCE_RE pairs ``` across a ~~~ block; #157 adopts fences.py",
+)
+def test_tilde_block_then_backticks_conserves_characters() -> None:
+    body = "# A\n\n~~~\n```\n~~~\n# B\n```\n"
+    meta = NoteMeta(None, (), ())
+    chunks = chunk_note("fence.md", body, meta, count_tokens=fake_count_tokens)
+    assert_conservation(chunks, body, meta)
