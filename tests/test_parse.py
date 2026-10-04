@@ -283,3 +283,23 @@ def test_render_keeps_every_fenced_line_verbatim(case: str) -> None:
     for start, end in fences:
         for line in lines[start : end + 1]:
             assert line in rendered
+
+
+def test_render_drops_lookalike_placeholder_nuls_without_duplicating_code_span() -> None:
+    body = "lookalike \x000\x00 mid and `real span`"
+
+    assert render_for_embedding(body) == "lookalike 0 mid and `real span`"
+
+
+def test_render_does_not_raise_on_out_of_range_lookalike_placeholder() -> None:
+    assert render_for_embedding("x \x0099\x00 y") == "x 99 y"
+
+
+def test_render_drops_nuls_inside_fenced_block() -> None:
+    body = "```\na\x00b [[x]]\n# h\n```"
+
+    assert render_for_embedding(body) == "```\nab [[x]]\n# h\n```"
+
+
+def test_render_drops_lone_nul_adjacent_to_code_span() -> None:
+    assert render_for_embedding("\x001`c`") == "1`c`"
