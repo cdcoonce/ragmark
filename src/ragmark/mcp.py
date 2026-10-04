@@ -6,9 +6,10 @@ contract — a change here is a decision, not a refactor.
 
 Registration (decided): the server registers under the name **`vault`** so
 existing `mcp__vault__*` tool names survive the cutover from the vendored
-`vault_mcp.py`. The packaged entry point is `ragmark mcp --vault PATH`
-(`RAGMARK_VAULT` env fallback); the vault root is never derived from
-`__file__` — that trick dies with vendoring. The machine context is read
+`vault_mcp.py`. The packaged entry point is `ragmark --config FILE mcp`, or
+`ragmark --vault PATH mcp` for defaults (`RAGMARK_VAULT` env fallback).
+The vault root is never derived from `__file__` — that trick dies with
+vendoring. The machine context is read
 server-side from the vault root, never accepted from the caller.
 
 Deliberate asymmetry: `ragmark index` is CLI-only. This face exposes no

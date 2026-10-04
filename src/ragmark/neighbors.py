@@ -13,9 +13,7 @@ ragmark's context gate to every neighbor before it surfaces.
 
 from __future__ import annotations
 
-import graphmark
-
-from ragmark import gate
+from ragmark import _graph, gate
 from ragmark.config import RagmarkConfig
 from ragmark.model import Neighbor, Neighborhood
 
@@ -34,13 +32,16 @@ def vault_neighbors(
     config: RagmarkConfig,
 ) -> Neighborhood:
     """Walk the wikilink neighborhood of *path* (see module contract)."""
-    gate.resolve_note(path, config)  # propagate on the origin itself (cli.py already maps it)
+    resolved = gate.resolve_note(path, config)  # propagate on the origin itself
     depth = min(depth, MAX_DEPTH)
 
-    graph = graphmark.build(config.vault_root)
-    visited = {path}
+    scoped = _graph.has_corpus_scope(config)
+    graph = _graph.build_graph(config)
+    # The scoped catalog uses canonical contained paths, just like direct reads.
+    origin = resolved.relative_to(config.vault_root.resolve()).as_posix() if scoped else path
+    visited = {origin}
     assigned: dict[str, tuple[int, str, str]] = {}
-    frontier = [path]
+    frontier = [origin]
     level = 0
     while frontier and level < depth:
         level += 1

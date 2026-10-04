@@ -9,6 +9,9 @@
                                             maintenance — deliberate asymmetry)
     ragmark mcp                            (serve the MCP face over stdio)
 
+Global options precede the verb: `ragmark --config vault.toml mcp` loads the
+explicit TOML configuration; `ragmark --vault PATH mcp` uses defaults.
+
 Context gating lives in the core, so every verb here gates identically to the
 MCP tools — the /find-vs-MCP asymmetry the survey found cannot recur.
 
@@ -82,7 +85,9 @@ def _add_fusion_flag(parser: argparse.ArgumentParser) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ragmark", description=__doc__)
-    parser.add_argument("--vault", help=f"vault root (or ${VAULT_ENV})")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--vault", help=f"vault root (or ${VAULT_ENV})")
+    source.add_argument("--config", type=Path, help="TOML configuration file")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_search = sub.add_parser("search", help="hybrid chunk search")
@@ -120,8 +125,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Entry point (error boundary: stubs and gate refusals become exit codes)."""
-    args = _build_parser().parse_args()
-    config = RagmarkConfig.for_vault(_resolve_vault(args.vault))
+    parser = _build_parser()
+    args = parser.parse_args()
+    if args.config is not None:
+        try:
+            config = RagmarkConfig.from_toml(args.config)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            # File, TOML, and shape errors belong to this input boundary; the
+            # engine below must not have its own failures reclassified here.
+            parser.error(f"cannot load config {args.config}: {error}")
+    else:
+        config = RagmarkConfig.for_vault(_resolve_vault(args.vault))
     store = IndexStore(config.index_dir)
     embedder = FastembedEmbedder()
 

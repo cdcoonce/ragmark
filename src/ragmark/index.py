@@ -188,6 +188,9 @@ def _recompact_vectors(
 
     ordered = store.ordered_chunk_ids(conn)
     if not ordered:
+        # Narrowing owner scope can remove the last note. Keep the empty-index
+        # representation consistent with a newly built empty vault.
+        store.vectors_path.unlink(missing_ok=True)
         return
 
     dim = embedder.identity().dim
@@ -205,7 +208,8 @@ def _walk_notes(config: RagmarkConfig) -> list[Path]:
     """Walk `config.vault_root`, pruning excluded/dot directories, filtering
     to indexable notes. Never `rglob("*.md")`: it would descend into `.git/`
     and `.ragmark/` before filtering."""
-    notes: list[Path] = []
+    notes: set[Path] = set()
+    root = config.vault_root.resolve()
     for dirpath, dirnames, filenames in os.walk(config.vault_root):
         dirnames[:] = [
             name
@@ -213,7 +217,15 @@ def _walk_notes(config: RagmarkConfig) -> list[Path]:
             if not name.startswith(".") and name not in config.excluded_dirs
         ]
         for filename in filenames:
-            resolved = Path(dirpath) / filename
-            if gate.is_indexable_note(resolved, config):
-                notes.append(resolved)
-    return notes
+            candidate = Path(dirpath) / filename
+            if not gate.is_indexable_note(candidate, config):
+                continue
+            resolved = candidate.resolve()
+            if (
+                resolved.is_relative_to(root)
+                and resolved.is_file()
+                and gate._has_exact_spelling(root, resolved.relative_to(root))
+                and gate.is_indexable_note(resolved, config)
+            ):
+                notes.add(resolved)
+    return sorted(notes)

@@ -10,6 +10,7 @@ to a shared note that is reachable only THROUGH it).
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,61 @@ def test_out_link_and_back_link_only_neighbors_both_appear(make_vault) -> None:
 
     assert by_path["hop1.md"].direction == "out"
     assert by_path["backlinker.md"].direction == "back"
+
+
+@pytest.mark.parametrize("hidden_dir", [".claude/worktrees/copy", "notes/.drafts/copy"])
+def test_hidden_copies_do_not_change_visible_neighbors(make_vault, hidden_dir: str) -> None:
+    config = make_vault("personal")
+    expected = vault_neighbors("origin.md", depth=3, config=config)
+    hidden = config.vault_root / hidden_dir
+    hidden.mkdir(parents=True)
+    for name in ("origin.md", "hop1.md"):
+        (hidden / name).write_text("Hidden copy.\n", encoding="utf-8")
+
+    actual = vault_neighbors("origin.md", depth=3, config=config)
+
+    assert actual == expected
+
+
+def test_configured_excluded_copies_do_not_change_visible_neighbors(make_vault) -> None:
+    config = replace(make_vault("personal"), excluded_dirs=frozenset({"snapshots"}))
+    expected = vault_neighbors("origin.md", depth=3, config=config)
+    excluded = config.vault_root / "notes" / "snapshots" / "copy"
+    excluded.mkdir(parents=True)
+    for name in ("origin.md", "hop1.md"):
+        (excluded / name).write_text("Excluded copy.\n", encoding="utf-8")
+
+    actual = vault_neighbors("origin.md", depth=3, config=config)
+
+    assert actual == expected
+
+
+def test_hidden_markdown_alias_does_not_steal_visible_link(make_vault) -> None:
+    config = make_vault("personal")
+    (config.vault_root / "origin.md").write_text("[[Friendly]]\n", encoding="utf-8")
+    (config.vault_root / "live.md").write_text(
+        "---\naliases: [Friendly]\n---\nVisible target.\n", encoding="utf-8"
+    )
+    expected = vault_neighbors("origin.md", config=config)
+    assert "live.md" in {n.note_path for n in expected.neighbors}
+    (config.vault_root / ".hidden.md").write_text(
+        "---\naliases: [Friendly]\n---\nHidden alias.\n", encoding="utf-8"
+    )
+
+    actual = vault_neighbors("origin.md", config=config)
+
+    assert actual == expected
+
+
+def test_visible_duplicate_stays_ambiguous(make_vault) -> None:
+    config = make_vault("personal")
+    duplicate = config.vault_root / "notes" / "hop1.md"
+    duplicate.parent.mkdir()
+    duplicate.write_text("Another visible note.\n", encoding="utf-8")
+
+    result = vault_neighbors("origin.md", depth=3, config=config)
+
+    assert [n.note_path for n in result.neighbors] == ["backlinker.md"]
 
 
 def test_depth_99_matches_depth_3_and_caps_at_max_depth(make_vault) -> None:

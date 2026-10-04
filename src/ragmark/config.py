@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 # Machine context that owns a top-level directory. Directories absent from the
 # map (brain/, reference/, thinking/, school/ in the reference vault) are shared.
@@ -39,6 +39,25 @@ DEFAULT_VISIBLE_SCOPES: dict[str, frozenset[str]] = {
 CONTEXT_FILE = ".vault-context"
 
 
+def _scope_values(value: object, field_name: str, *, prefixes: bool = False) -> tuple[str, ...]:
+    """Validate literal corpus names before normalizing their collection."""
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError(f"{field_name} must be a collection of literal strings")
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name} entries must be strings")
+        parts = item.removesuffix("/").split("/") if prefixes else [item]
+        if (
+            not item
+            or PureWindowsPath(item).drive
+            or any(char in item for char in "\\\0*?[]")
+            or (not prefixes and "/" in item)
+            or any(part in ("", ".", "..") for part in parts)
+        ):
+            raise ValueError(f"{field_name} contains an invalid literal relative value: {item!r}")
+    return tuple(value)
+
+
 @dataclass(frozen=True, slots=True)
 class RagmarkConfig:
     """Resolved configuration for one vault.
@@ -54,6 +73,20 @@ class RagmarkConfig:
     visible_scopes: dict[str, frozenset[str]] = field(
         default_factory=lambda: dict(DEFAULT_VISIBLE_SCOPES)
     )
+    # Optional corpus policy, approved in ragmark#94 (2026-10-03). Empty means
+    # the existing unrestricted corpus, independently of machine-context gating.
+    scoped_folders: frozenset[str] = frozenset()
+    excluded_filenames: frozenset[str] = frozenset()
+    excluded_path_prefixes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("scoped_folders", "excluded_filenames"):
+            object.__setattr__(self, name, frozenset(_scope_values(getattr(self, name), name)))
+        object.__setattr__(
+            self,
+            "excluded_path_prefixes",
+            _scope_values(self.excluded_path_prefixes, "excluded_path_prefixes", prefixes=True),
+        )
 
     @classmethod
     def for_vault(cls, vault_root: Path, index_dir: Path | None = None) -> RagmarkConfig:
@@ -90,4 +123,7 @@ class RagmarkConfig:
             excluded_dirs=frozenset(data.get("excluded_dirs", ())),
             context_dirs=dict(data.get("context_dirs", DEFAULT_CONTEXT_DIRS)),
             visible_scopes=scopes,
+            scoped_folders=data.get("scoped_folders", ()),
+            excluded_filenames=data.get("excluded_filenames", ()),
+            excluded_path_prefixes=data.get("excluded_path_prefixes", ()),
         )
