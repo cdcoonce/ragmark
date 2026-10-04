@@ -303,3 +303,35 @@ def test_render_drops_nuls_inside_fenced_block() -> None:
 
 def test_render_drops_lone_nul_adjacent_to_code_span() -> None:
     assert render_for_embedding("\x001`c`") == "1`c`"
+
+
+# A lone `\r` is not a line end for _INLINE_CODE_RE, so an inline span can swallow
+# a fence placeholder; the restore must unwind nested placeholders (#208).
+_LEAK_REPRO = "`a\r```\r# k\r```\r`b"
+
+
+def test_render_restores_fence_swallowed_by_inline_span() -> None:
+    assert render_for_embedding(_LEAK_REPRO) == _LEAK_REPRO
+
+
+def test_render_restores_two_fences_inside_one_inline_span() -> None:
+    body = "`a\r```\r1\r```\rmid\r```\r2\r```\r`b"
+
+    assert render_for_embedding(body) == body
+
+
+def test_render_restores_tilde_fence_with_wikilink_inside_inline_span() -> None:
+    body = "`a\r~~~\r[[L]]\r~~~\r`b"
+
+    assert render_for_embedding(body) == body
+
+
+def test_render_lone_cr_inline_span_without_fence_stays_protected() -> None:
+    assert render_for_embedding("x [[L]] `a *b*\rc`") == "x L `a *b*\rc`"
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n", "\u2028"])
+def test_render_leaves_no_placeholder_for_other_line_endings(eol: str) -> None:
+    rendered = render_for_embedding(_LEAK_REPRO.replace("\r", eol))
+
+    assert "\x00" not in rendered
