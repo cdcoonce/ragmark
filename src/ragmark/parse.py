@@ -17,11 +17,11 @@ import re
 
 import yaml
 
+from ragmark.fences import find_fences
 from ragmark.model import NoteMeta
 
 _FRONTMATTER_DELIM = "---"
 
-_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+?`")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+", re.MULTILINE)
@@ -149,6 +149,36 @@ def _strip_emphasis(text: str) -> str:
     return "".join(pieces)
 
 
+def _stash_fences(body: str, stashed: list[str]) -> str:
+    """Replace each closed fenced block in *body* with a placeholder.
+
+    Fence boundaries come from the shared scanner `ragmark.fences.find_fences`
+    (the same one `chunk.py` uses). A block spans from the first character of
+    its opening line through the end of its closing line's content; the closing
+    line's own line ending stays outside the placeholder.
+    """
+    lines = body.splitlines(keepends=True)
+    fences, _ = find_fences([line.rstrip("\r\n") for line in lines])
+    if not fences:
+        return body
+
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in fences:
+        span_start = offsets[start]
+        span_end = offsets[end] + len(lines[end].rstrip("\r\n"))
+        pieces.append(body[cursor:span_start])
+        stashed.append(body[span_start:span_end])
+        pieces.append(f"\x00{len(stashed) - 1}\x00")
+        cursor = span_end
+    pieces.append(body[cursor:])
+    return "".join(pieces)
+
+
 def render_for_embedding(body: str) -> str:
     """Return the normalized text surface that gets embedded.
 
@@ -162,7 +192,7 @@ def render_for_embedding(body: str) -> str:
         stashed.append(match.group(0))
         return f"\x00{len(stashed) - 1}\x00"
 
-    protected = _FENCE_RE.sub(_stash, body)
+    protected = _stash_fences(body, stashed)
     protected = _INLINE_CODE_RE.sub(_stash, protected)
 
     def _wikilink_sub(match: re.Match[str]) -> str:

@@ -240,10 +240,6 @@ def test_longer_backtick_fence_is_not_closed_by_shorter_run() -> None:
     assert _checked_headings(body) == ["A", "B"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="parse._FENCE_RE pairs ``` across a ~~~ block; #157 adopts fences.py",
-)
 def test_tilde_block_then_backticks_conserves_characters() -> None:
     body = "# A\n\n~~~\n```\n~~~\n# B\n```\n"
     meta = NoteMeta(None, (), ())
