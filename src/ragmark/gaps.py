@@ -44,10 +44,19 @@ GAPS_DEFAULT_HUB_DEGREE = 40
 _DEFAULT_DISMISSAL_STORE = ".claude/data/connect-dismissed.json"
 
 
+def _escape_sig_part(path: str) -> str:
+    return path.replace("\\", "\\\\").replace("|", "\\|")
+
+
 def _sig(a: str, b: str) -> str:
     # Identical to ``dismiss.weaklink_sig`` (pinned by tests/test_gaps.py); kept local because
-    # the source-scan test bans ``weaklink_sig`` references in this module.
-    return "weaklink|" + "|".join(sorted([a, b]))
+    # the source-scan test bans ``weaklink_sig`` references in this module. Two disjoint
+    # formats: the legacy ``weaklink|a|b`` when neither path has a ``|`` (byte-identical to
+    # signatures already on disk), else ``weaklink2|`` plus the escaped, sorted paths, so
+    # ``("x", "y|z")`` and ``("x|y", "z")`` no longer collide.
+    if "|" not in a and "|" not in b:
+        return "weaklink|" + "|".join(sorted([a, b]))
+    return "weaklink2|" + "|".join(sorted([_escape_sig_part(a), _escape_sig_part(b)]))
 
 
 def _degrees(graph: VaultGraph) -> dict[str, int]:
@@ -166,8 +175,8 @@ def gaps(
     records = dismiss.load_dismissed(config.vault_root, path=str(store_path))
     dismissed: set[str] = set()
     root = config.vault_root
-    for sig, record in records.items():
-        # Malformed or out-of-vault records are skipped, as graphmark v0.10.0's
+    for record in records.values():
+        # Malformed or out-of-vault records are skipped, as graphmark v0.10.1's
         # ``active_dismissed_sigs`` does.
         if not isinstance(record, dict):
             continue
@@ -190,7 +199,9 @@ def gaps(
             and dismiss.content_hash(a_path) == a_hash
             and dismiss.content_hash(b_path) == b_hash
         ):
-            dismissed.add(sig)
+            # Recomputed from the record, not the stored key, so a legacy unescaped-pipe key
+            # migrates to the escaped format as ``active_dismissed_sigs`` does.
+            dismissed.add(_sig(a, b))
 
     return rank_pairs(
         graph,

@@ -707,9 +707,76 @@ def test_directory_dismissal_record_is_skipped_not_raised(
     assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
 
 
+_TRICKY_PAIRS = (
+    ("a.md", "b.md"),
+    ("z/y.md", "a.md"),
+    ("x.md", "x.md"),
+    ("x", "y|z"),
+    ("x|y", "z"),
+    ("|", "x"),
+    ("a\\b", "c"),
+    ("a\\|b", "c"),
+    ("a\\", "|b"),
+    ("a|", "b"),
+    ("|a", "|b"),
+)
+
+
 def test_sig_is_identical_to_dismiss_weaklink_sig() -> None:
-    for a, b in (("a.md", "b.md"), ("z/y.md", "a.md"), ("x.md", "x.md")):
+    for a, b in _TRICKY_PAIRS:
         assert gaps._sig(a, b) == dismiss.weaklink_sig(a, b)
+        assert gaps._sig(b, a) == dismiss.weaklink_sig(a, b)
+
+
+def test_sig_pipe_pairs_do_not_collide_and_plain_pairs_keep_the_old_format() -> None:
+    assert gaps._sig("x", "y|z") != gaps._sig("x|y", "z")
+    assert gaps._sig("x", "y|z") == "weaklink2|x|y\\|z"
+    assert gaps._sig("|", "x") == "weaklink2|\\||x"
+    assert gaps._sig("a\\b", "c") == "weaklink|a\\b|c"
+    assert gaps._sig("b.md", "a.md") == gaps._sig("a.md", "b.md") == "weaklink|a.md|b.md"
+
+
+# Two distinct pairs whose unescaped signatures are the same string,
+# ``weaklink|brain/a.md|brain/b.md|brain/c.md``: the join boundary falls on a different ``|``.
+_PAIR_ONE = ("brain/a.md", "brain/b.md|brain/c.md")
+_PAIR_TWO = ("brain/a.md|brain/b.md", "brain/c.md")
+_PIPE_NOTES = [*_PAIR_ONE, *_PAIR_TWO]
+_PIPE_SIMILAR = {
+    **_both_ways(*_PAIR_ONE, 0.8),
+    **_both_ways(*_PAIR_TWO, 0.8),
+}
+
+
+def test_dismissing_a_pipe_pair_does_not_suppress_its_colliding_twin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, _PIPE_NOTES)
+    dismiss.record_dismissal(config.vault_root, *_PAIR_ONE)
+    _stub_similar(monkeypatch, _PIPE_SIMILAR)
+    assert _pairs(gaps.gaps(config=config)) == {_pair(*_PAIR_TWO)}
+
+
+def test_legacy_unescaped_pipe_key_record_is_still_honoured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, _PIPE_NOTES)
+    root = config.vault_root
+    store = root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "weaklink|brain/a.md|brain/b.md|brain/c.md": {
+                    "a": _PAIR_ONE[0],
+                    "b": _PAIR_ONE[1],
+                    "a_hash": dismiss.content_hash(root / _PAIR_ONE[0]),
+                    "b_hash": dismiss.content_hash(root / _PAIR_ONE[1]),
+                }
+            }
+        )
+    )
+    _stub_similar(monkeypatch, _PIPE_SIMILAR)
+    assert _pairs(gaps.gaps(config=config)) == {_pair(*_PAIR_TWO)}
 
 
 def test_two_root_level_notes_are_same_folder_and_equal_score_pair_is_sorted() -> None:

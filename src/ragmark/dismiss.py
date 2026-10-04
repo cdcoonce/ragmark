@@ -1,6 +1,6 @@
 """Dismissal store with content-hash staleness for weaklink suggestions.
 
-Ported byte-for-byte from graphmark v0.10.0 ``src/graphmark/dismiss.py`` so that
+Ported byte-for-byte from graphmark v0.10.1 ``src/graphmark/dismiss.py`` so that
 dismissals graphmark already recorded survive graphmark's ``gaps()`` deprecation
 (the-vault#143 decision 2). Where this module and graphmark's disagree, graphmark's
 code wins (Charles's 2026-09-26 byte-compatibility decision). This module does not
@@ -17,8 +17,25 @@ from pathlib import Path
 _DEFAULT_PATH = ".claude/data/connect-dismissed.json"
 
 
+def _escape_sig_part(path: str) -> str:
+    return path.replace("\\", "\\\\").replace("|", "\\|")
+
+
 def weaklink_sig(a: str, b: str) -> str:
-    return "weaklink|" + "|".join(sorted([a, b]))
+    """Order-independent signature for a note pair. Two disjoint formats:
+
+    - Neither path contains ``|``: ``"weaklink|" + "|".join(sorted([a, b]))``, unescaped
+      (backslashes untouched), exactly as before, so signatures already persisted stay valid.
+    - Either path contains ``|``: ``"weaklink2|"`` plus the two paths escaped (``\\`` -> ``\\\\``,
+      then ``|`` -> ``\\|``), sorted, and joined with ``|``. Escaping makes the join injective, so
+      ``("x", "y|z")`` and ``("x|y", "z")`` no longer collide.
+
+    The legacy format always has ``|`` right after ``weaklink``; the new one has ``2`` there, so
+    the formats cannot collide with each other.
+    """
+    if "|" not in a and "|" not in b:
+        return "weaklink|" + "|".join(sorted([a, b]))
+    return "weaklink2|" + "|".join(sorted([_escape_sig_part(a), _escape_sig_part(b)]))
 
 
 def content_hash(path: Path) -> str:
@@ -84,7 +101,7 @@ def load_dismissed(root: Path, *, path: str = _DEFAULT_PATH) -> dict:
 def active_dismissed_sigs(root: Path, *, path: str = _DEFAULT_PATH) -> set[str]:
     dismissed = load_dismissed(root, path=path)
     active: set[str] = set()
-    for sig, record in dismissed.items():
+    for record in dismissed.values():
         if not isinstance(record, dict):
             continue
         a, b, a_hash, b_hash = (
@@ -104,5 +121,7 @@ def active_dismissed_sigs(root: Path, *, path: str = _DEFAULT_PATH) -> set[str]:
             and content_hash(a_path) == a_hash
             and content_hash(b_path) == b_hash
         ):
-            active.add(sig)
+            # Recompute from a/b rather than trusting the stored key, so a store written under
+            # the pre-escaping encoding migrates on read.
+            active.add(weaklink_sig(a, b))
     return active

@@ -1,6 +1,6 @@
 """Cross-reads ragmark.dismiss against graphmark.dismiss for byte-compatibility.
 
-Provenance: graphmark v0.10.0 dismiss.py, the-vault#143 decision 2, 2026-09-26.
+Provenance: graphmark v0.10.1 dismiss.py, the-vault#143 decision 2, 2026-09-26.
 """
 
 from __future__ import annotations
@@ -313,6 +313,25 @@ def test_default_path_matches_graphmark():
 
 def test_module_docstring_cites_provenance():
     docstring = rdismiss.__doc__
-    assert "graphmark v0.10.0" in docstring
+    assert "graphmark v0.10.1" in docstring
     assert "the-vault#143" in docstring
     assert "2026-09-26" in docstring
+
+
+_PIPE_CASES = [
+    (("x", "y|z"), "weaklink2|x|y\\|z"),
+    (("y|z", "x"), "weaklink2|x|y\\|z"),
+    (("|", "x"), "weaklink2|\\||x"),
+    (("a\\b", "c"), "weaklink|a\\b|c"),
+    (("b.md", "a.md"), "weaklink|a.md|b.md"),
+]
+
+
+@pytest.mark.parametrize(("args", "expected"), _PIPE_CASES)
+def test_weaklink_sig_exact_bytes_match_graphmark(args, expected):
+    assert rdismiss.weaklink_sig(*args) == expected
+    assert gdismiss.weaklink_sig(*args) == expected
+
+
+def test_weaklink_sig_pipe_pairs_do_not_collide():
+    assert rdismiss.weaklink_sig("x", "y|z") != rdismiss.weaklink_sig("x|y", "z")
