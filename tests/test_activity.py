@@ -578,6 +578,54 @@ def test_subdirectory_vault_reports_vault_relative_uncommitted_paths(git_vault_s
     assert by_path["fresh/b.md"].modified == _iso(fresh_mtime)
 
 
+def test_staged_rename_does_not_mangle_old_path_into_clean_note(tmp_path: Path) -> None:
+    # Without `--no-renames`, a staged rename emits `R  new.md` plus a bare `abcdef.md`
+    # entry; the 3-char "XY " strip mangles the bare path into `def.md`, a clean note
+    # last committed outside the window.
+    repo_root, env, sentinel = _setup_repo(tmp_path, "repo-rename")
+    now = datetime.now(UTC)
+
+    (repo_root / "def.md").write_text("clean content\n", encoding="utf-8")
+    _commit(repo_root, env, now - timedelta(days=8), "clean def")
+    (repo_root / "abcdef.md").write_text("to be renamed\n", encoding="utf-8")
+    _commit(repo_root, env, now - timedelta(days=2), "abcdef")
+    (repo_root / CONTEXT_FILE).write_text("work\n", encoding="utf-8")
+
+    _git(repo_root, "mv", "abcdef.md", "renamed-note.md", env=env)
+    mtime = _set_mtime(repo_root / "renamed-note.md", datetime.now(UTC) - timedelta(hours=1))
+
+    by_path = {e.note_path: e for e in recent_activity(config=RagmarkConfig.for_vault(repo_root))}
+    assert by_path["renamed-note.md"].modified == _iso(mtime)
+    assert "def.md" not in by_path
+    assert "abcdef.md" not in by_path
+    assert not sentinel.exists()
+
+
+def test_dirty_note_outside_vault_prefix_never_reported_despite_name_collision(
+    tmp_path: Path,
+) -> None:
+    # The repo-root file's name minus the 6-char `vault/` prefix collides with the clean
+    # vault note `a.md`, so only the prefix filter / pathspec keep it from being mapped.
+    repo_root, env, sentinel = _setup_repo(tmp_path, "repo-collide")
+    vault_root = repo_root / "vault"
+    vault_root.mkdir()
+    now = datetime.now(UTC)
+
+    root_note = repo_root / "xxxxxxa.md"
+    root_note.write_text("root content\n", encoding="utf-8")
+    (vault_root / "a.md").write_text("vault content\n", encoding="utf-8")
+    _commit(repo_root, env, now - timedelta(days=8), "both notes, outside window")
+    (vault_root / CONTEXT_FILE).write_text("work\n", encoding="utf-8")
+
+    root_note.write_text("root edited uncommitted\n", encoding="utf-8")
+    _set_mtime(root_note, datetime.now(UTC) - timedelta(hours=1))
+
+    paths = {e.note_path for e in recent_activity(config=RagmarkConfig.for_vault(vault_root))}
+    assert "a.md" not in paths
+    assert "xxxxxxa.md" not in paths
+    assert not sentinel.exists()
+
+
 def test_repo_without_commits_still_falls_back_to_mtime(tmp_path: Path) -> None:
     repo_root, _env, sentinel = _setup_repo(tmp_path, "repo-empty")
     note = repo_root / "first.md"
