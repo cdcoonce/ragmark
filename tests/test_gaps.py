@@ -4,8 +4,8 @@ Fixture vault (`tests/fixtures/gaps/vault/`): band-edge probes (lo/hi exactly on
 threshold/max_score, below/above just outside), a real wikilink (linkA -> linkB) for
 already-linked filtering in both directions, a hub note (`hubn.md`, made a hub only by an
 in-memory self-loop injected after `graphmark.build`), a non-hub pair, same- vs.
-cross-folder ties, a duplicate unordered pair at two scores, a dismissed pair, and a note
-offered as similar to itself.
+cross-folder ties, a duplicate unordered pair at two scores, a dismissed pair, an equal-score
+reciprocal tie, and a note offered as similar to itself.
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ SIMILAR: dict[str, list[tuple[str, float]]] = {
     "dup_q.md": [("dup_p.md", 0.75)],
     "dismiss_d1.md": [("dismiss_d2.md", 0.75)],
     "selfsim.md": [("selfsim.md", 0.80)],
+    # Equal-score reciprocal tie, tie_b scanned first: the stored pair must be sorted.
+    "tie_b.md": [("tie_a.md", 0.70)],
+    "tie_a.md": [("tie_b.md", 0.70)],
 }
 
 TARGETS = list(SIMILAR.keys())
@@ -612,17 +615,40 @@ def test_out_of_vault_dismissal_record_is_skipped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    outside = tmp_path / "x.md"  # beside the vault root, not under it; exists and is a file
+    outside.write_text("outside", encoding="utf-8")
     store = config.vault_root / _DEFAULT_STORE
     store.parent.mkdir(parents=True)
-    a_path, b_path = config.vault_root / "brain/a.md", config.vault_root / "brain/b.md"
     store.write_text(
         json.dumps(
             {
-                "weaklink|../x.md|brain/b.md": {
+                "weaklink|brain/a.md|brain/b.md": {
                     "a": "../x.md",
                     "b": "brain/b.md",
-                    "a_hash": dismiss.content_hash(a_path),
-                    "b_hash": dismiss.content_hash(b_path),
+                    "a_hash": dismiss.content_hash(outside),
+                    "b_hash": dismiss.content_hash(config.vault_root / "brain/b.md"),
+                }
+            }
+        )
+    )
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_directory_dismissal_record_is_skipped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/sub/c.md"])
+    store = config.vault_root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "weaklink|brain/a.md|brain/b.md": {
+                    "a": "brain/sub",
+                    "b": "brain/b.md",
+                    "a_hash": "0" * 40,
+                    "b_hash": dismiss.content_hash(config.vault_root / "brain/b.md"),
                 }
             }
         )
