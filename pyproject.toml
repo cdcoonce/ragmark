@@ -23,7 +23,7 @@ classifiers = [
 # defense against model drift is the index manifest, which records model name/dim/version
 # and refuses a mismatched index (decision: the-vault#140).
 dependencies = [
-    "graphmark>=0.10,<1.0",
+    "graphmark>=0.10.1,<1.0",
     "fastembed>=0.8,<0.9",
     "numpy>=2,<3",
     "pyyaml>=6,<7",
