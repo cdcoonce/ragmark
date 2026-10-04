@@ -184,8 +184,10 @@ def render_for_embedding(body: str) -> str:
 
     Fenced code blocks and inline code spans are carved out first and left
     byte-for-byte untouched; wikilink, heading, and emphasis stripping run
-    only over the remaining prose.
+    only over the remaining prose. Literal NUL characters are dropped first, so
+    every NUL in the stashed text is a placeholder the function inserted itself.
     """
+    body = body.replace("\x00", "")
     stashed: list[str] = []
 
     def _stash(match: re.Match[str]) -> str:
