@@ -1,6 +1,6 @@
 """Cross-reads ragmark.dismiss against graphmark.dismiss for byte-compatibility.
 
-Provenance: graphmark v0.9.1 dismiss.py, the-vault#143 decision 2, 2026-09-26.
+Provenance: graphmark v0.10.0 dismiss.py, the-vault#143 decision 2, 2026-09-26.
 """
 
 from __future__ import annotations
@@ -153,20 +153,86 @@ def test_readers_do_not_mutate_store_and_stale_entry_survives(tmp_path):
     assert ragmark_bytes == graphmark_bytes
 
 
-def test_record_dismissal_on_list_store_raises_type_error_and_leaves_bytes_unchanged(tmp_path):
+def test_record_dismissal_on_list_store_replaces_it_with_a_record_in_both_modules(tmp_path):
+    # graphmark v0.10.0 reads the store through load_dismissed, which treats a non-object
+    # store as empty, so recording succeeds instead of raising TypeError.
+    _make_notes(tmp_path)
+    for mod in (rdismiss, gdismiss):
+        store = tmp_path / mod._DEFAULT_PATH
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(json.dumps(["not", "an", "object"]))
+        mod.record_dismissal(tmp_path, "a.md", "b.md")
+        assert list(json.loads(store.read_text())) == [rdismiss.weaklink_sig("a.md", "b.md")]
+        store.unlink()
+
+
+def test_record_dismissal_rejected_write_leaves_store_bytes_unchanged(tmp_path):
     store = tmp_path / rdismiss._DEFAULT_PATH
     store.parent.mkdir(parents=True)
-    store.write_text(json.dumps(["not", "an", "object"]))
+    store.write_text(json.dumps({}))
     bytes_before = store.read_bytes()
     _make_notes(tmp_path)
 
-    with pytest.raises(TypeError):
-        rdismiss.record_dismissal(tmp_path, "a.md", "b.md")
+    with pytest.raises(ValueError):
+        rdismiss.record_dismissal(tmp_path, "a.md", "missing.md")
+    with pytest.raises(ValueError):
+        rdismiss.record_dismissal(tmp_path, "a.md", "../outside.md")
 
     assert store.read_bytes() == bytes_before
 
-    with pytest.raises(TypeError):
-        gdismiss.record_dismissal(tmp_path, "a.md", "b.md")
+
+def test_record_dismissal_missing_note_raises_value_error_in_both_modules(tmp_path):
+    (tmp_path / "a.md").write_text("a content")
+    for mod in (rdismiss, gdismiss):
+        with pytest.raises(ValueError, match="note not found"):
+            mod.record_dismissal(tmp_path, "a.md", "nope.md")
+        assert not (tmp_path / mod._DEFAULT_PATH).exists()
+
+
+def test_record_dismissal_rejects_out_of_vault_path_in_both_modules(tmp_path):
+    root = tmp_path / "vault"
+    root.mkdir()
+    (root / "a.md").write_text("a content")
+    (tmp_path / "outside.md").write_text("outside")
+    for mod in (rdismiss, gdismiss):
+        for a, b in (
+            ("a.md", "../outside.md"),
+            ("../outside.md", "a.md"),
+            ("a.md", str(tmp_path / "outside.md")),
+        ):
+            with pytest.raises(ValueError, match="resolves outside"):
+                mod.record_dismissal(root, a, b)
+        assert not (root / mod._DEFAULT_PATH).exists()
+
+
+def test_record_dismissal_atomic_write_leaves_no_temp_file(tmp_path):
+    _make_notes(tmp_path)
+    rdismiss.record_dismissal(tmp_path, "a.md", "b.md")
+    store = tmp_path / rdismiss._DEFAULT_PATH
+    assert [p.name for p in store.parent.iterdir()] == [store.name]
+
+
+def test_record_dismissal_interrupted_write_keeps_prior_store_and_no_temp_file(
+    tmp_path, monkeypatch
+):
+    _make_notes(tmp_path)
+    (tmp_path / "c.md").write_text("c content")
+    rdismiss.record_dismissal(tmp_path, "a.md", "b.md")
+    store = tmp_path / rdismiss._DEFAULT_PATH
+    before = store.read_bytes()
+
+    real_write_text = Path.write_text
+
+    def flaky(self, data, *args, **kwargs):
+        real_write_text(self, data[: len(data) // 2], *args, **kwargs)
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(Path, "write_text", flaky)
+    with pytest.raises(OSError):
+        rdismiss.record_dismissal(tmp_path, "a.md", "c.md")
+
+    assert store.read_bytes() == before
+    assert [p.name for p in store.parent.iterdir()] == [store.name]
 
 
 def test_non_utf8_store_raises_unicode_decode_error_and_leaves_bytes_unchanged(tmp_path):
@@ -185,19 +251,36 @@ def test_non_utf8_store_raises_unicode_decode_error_and_leaves_bytes_unchanged(t
     assert store.read_bytes() == bytes_before
 
 
-def test_active_dismissed_sigs_on_record_missing_keys_raises_key_error(tmp_path):
+def test_active_dismissed_sigs_skips_record_missing_keys_in_both_modules(tmp_path):
     store = tmp_path / rdismiss._DEFAULT_PATH
     store.parent.mkdir(parents=True)
     store.write_text(json.dumps({"x": {}}))
     bytes_before = store.read_bytes()
 
-    with pytest.raises(KeyError):
-        rdismiss.active_dismissed_sigs(tmp_path)
+    assert rdismiss.active_dismissed_sigs(tmp_path) == set()
+    assert gdismiss.active_dismissed_sigs(tmp_path) == set()
     assert store.read_bytes() == bytes_before
 
-    with pytest.raises(KeyError):
-        gdismiss.active_dismissed_sigs(tmp_path)
-    assert store.read_bytes() == bytes_before
+
+def test_active_dismissed_sigs_skips_out_of_vault_record_but_keeps_valid_one(tmp_path):
+    root = tmp_path / "vault"
+    root.mkdir()
+    _make_notes(root)
+    (tmp_path / "outside.md").write_text("outside")
+    rdismiss.record_dismissal(root, "a.md", "b.md")
+    store = root / rdismiss._DEFAULT_PATH
+    records = json.loads(store.read_text())
+    records["weaklink|../outside.md|a.md"] = {
+        "a": "../outside.md",
+        "b": "a.md",
+        "a_hash": rdismiss.content_hash(tmp_path / "outside.md"),
+        "b_hash": rdismiss.content_hash(root / "a.md"),
+    }
+    store.write_text(json.dumps(records))
+
+    expected = {rdismiss.weaklink_sig("a.md", "b.md")}
+    assert rdismiss.active_dismissed_sigs(root) == expected
+    assert gdismiss.active_dismissed_sigs(root) == expected
 
 
 def test_dismiss_module_does_not_import_graphmark():
@@ -230,6 +313,6 @@ def test_default_path_matches_graphmark():
 
 def test_module_docstring_cites_provenance():
     docstring = rdismiss.__doc__
-    assert "graphmark v0.9.1" in docstring
+    assert "graphmark v0.10.0" in docstring
     assert "the-vault#143" in docstring
     assert "2026-09-26" in docstring
