@@ -205,4 +205,8 @@ def render_for_embedding(body: str) -> str:
     stripped = _HEADING_RE.sub("", stripped)
     stripped = _strip_emphasis(stripped)
 
-    return _PLACEHOLDER_RE.sub(lambda m: stashed[int(m.group(1))], stripped)
+    # A stashed inline span can itself contain a fence placeholder, so restore
+    # until none remain (every NUL left is one this function inserted).
+    while _PLACEHOLDER_RE.search(stripped):
+        stripped = _PLACEHOLDER_RE.sub(lambda m: stashed[int(m.group(1))], stripped)
+    return stripped
