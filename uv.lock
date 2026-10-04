@@ -545,14 +545,14 @@ wheels = [
 
 [[package]]
 name = "graphmark"
-version = "0.9.1"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "networkx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/87/d6/3b498f05ba24b5b0331c98405473776ee1789ae9dee70d0873bcb7f65348/graphmark-0.9.1.tar.gz", hash = "sha256:98d915f9f0b1ab6dab9e0cc94f835f0277657768ce2b605910c031b1a9af77c8", size = 156994, upload-time = "2026-07-26T17:17:03.947Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/f9/079f1b889e8bc0a8efc019b0f0350f6aac945f0d3d0a0833e3a64fd330b6/graphmark-0.10.0.tar.gz", hash = "sha256:667af72bd2cde132d29e6eb03c053be2f64524ab308e5e3179c963dfd6ce854a", size = 218127, upload-time = "2026-10-04T00:31:50.13Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/c1/ce221d40052510b6530b656b7216250cb2acc0e629fba65e0ab93f8ee6db/graphmark-0.9.1-py3-none-any.whl", hash = "sha256:ecb6f6a221d5d94461b32b7ec6d5fb3265a7cc55432c686f9fcef1ade94e2e5b", size = 43057, upload-time = "2026-07-26T17:17:03.035Z" },
+    { url = "https://files.pythonhosted.org/packages/50/08/d04b337d261228ee477f6c751b4c3d177e5a1f0c550875c1a5bfb5923b17/graphmark-0.10.0-py3-none-any.whl", hash = "sha256:162bf23ea791d4a6db45f87ec9d9354cf62bf89db9aa833cc8c4cfb4a713a888", size = 49639, upload-time = "2026-10-04T00:31:48.542Z" },
 ]
 
 [[package]]
@@ -1725,7 +1725,7 @@ requires-dist = [
     { name = "fastembed", specifier = ">=0.8,<0.9" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=2,<4" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=2,<4" },
-    { name = "graphmark", specifier = ">=0.9,<1.0" },
+    { name = "graphmark", specifier = ">=0.10,<1.0" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6,<7" },

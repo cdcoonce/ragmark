@@ -1,11 +1,11 @@
-"""Parity tests for ``rank_pairs`` against graphmark v0.9.1's ``metrics.gaps()``.
+"""Parity tests for ``rank_pairs`` against graphmark v0.10.0's ``metrics.gaps()``.
 
 Fixture vault (`tests/fixtures/gaps/vault/`): band-edge probes (lo/hi exactly on
 threshold/max_score, below/above just outside), a real wikilink (linkA -> linkB) for
 already-linked filtering in both directions, a hub note (`hubn.md`, made a hub only by an
 in-memory self-loop injected after `graphmark.build`), a non-hub pair, same- vs.
-cross-folder ties, a duplicate unordered pair at two scores, a dismissed pair, and a note
-offered as similar to itself.
+cross-folder ties, a duplicate unordered pair at two scores, a dismissed pair, an equal-score
+reciprocal tie, and a note offered as similar to itself.
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ SIMILAR: dict[str, list[tuple[str, float]]] = {
     "dup_q.md": [("dup_p.md", 0.75)],
     "dismiss_d1.md": [("dismiss_d2.md", 0.75)],
     "selfsim.md": [("selfsim.md", 0.80)],
+    # Equal-score reciprocal tie, tie_b scanned first: the stored pair must be sorted.
+    "tie_b.md": [("tie_a.md", 0.70)],
+    "tie_a.md": [("tie_b.md", 0.70)],
 }
 
 TARGETS = list(SIMILAR.keys())
@@ -63,7 +66,7 @@ def _sig(a: str, b: str) -> str:
 
 def _build_graph():
     graph = graphmark.build(FIXTURE_VAULT)
-    # graphmark.build drops self-links (v0.9.1 graph.py:734), so the self-loop that makes
+    # graphmark.build drops self-links (v0.10.0 graph.py), so the self-loop that makes
     # hubn.md a hub is injected here, in memory, after the build.
     graph.out_links["hubn.md"].add("hubn.md")
     graph.back_links["hubn.md"].add("hubn.md")
@@ -595,17 +598,99 @@ def test_dismissal_of_a_deleted_note_is_inactive(
     assert _pairs(gaps.gaps(config=config)) == {_pair(survivor, "brain/c.md")}
 
 
-def test_malformed_dismissal_record_raises_key_error(
+def test_malformed_dismissal_record_is_skipped_not_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # graphmark v0.10.0 skips a malformed record instead of raising KeyError.
     config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
     store = config.vault_root / _DEFAULT_STORE
     store.parent.mkdir(parents=True)
     sig = "weaklink|brain/a.md|brain/b.md"
-    store.write_text(json.dumps({sig: {"a": "brain/a.md", "b": "brain/b.md"}}))
+    store.write_text(json.dumps({sig: {"a": "brain/a.md", "b": "brain/b.md"}, "junk": 3}))
     _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
-    with pytest.raises(KeyError):
-        gaps.gaps(config=config)
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_out_of_vault_dismissal_record_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    outside = tmp_path / "x.md"  # beside the vault root, not under it; exists and is a file
+    outside.write_text("outside", encoding="utf-8")
+    store = config.vault_root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "weaklink|brain/a.md|brain/b.md": {
+                    "a": "../x.md",
+                    "b": "brain/b.md",
+                    "a_hash": dismiss.content_hash(outside),
+                    "b_hash": dismiss.content_hash(config.vault_root / "brain/b.md"),
+                }
+            }
+        )
+    )
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_directory_dismissal_record_is_skipped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md", "brain/sub/c.md"])
+    store = config.vault_root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    store.write_text(
+        json.dumps(
+            {
+                "weaklink|brain/a.md|brain/b.md": {
+                    "a": "brain/sub",
+                    "b": "brain/b.md",
+                    "a_hash": "0" * 40,
+                    "b_hash": dismiss.content_hash(config.vault_root / "brain/b.md"),
+                }
+            }
+        )
+    )
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_sig_is_identical_to_dismiss_weaklink_sig() -> None:
+    for a, b in (("a.md", "b.md"), ("z/y.md", "a.md"), ("x.md", "x.md")):
+        assert gaps._sig(a, b) == dismiss.weaklink_sig(a, b)
+
+
+def test_two_root_level_notes_are_same_folder_and_equal_score_pair_is_sorted() -> None:
+    sims = {
+        "s.md": [("r.md", 0.8)],
+        "r.md": [("s.md", 0.8)],
+        "g/x.md": [("h/y.md", 0.65)],
+        "h/y.md": [("g/x.md", 0.65)],
+    }
+
+    def similar(rel: str, k: int) -> list[tuple[str, float]]:
+        return sims.get(rel, [])
+
+    graph = graphmark.build(FIXTURE_VAULT)
+    graph.nodes.clear()
+    graph.out_links.clear()
+    graph.back_links.clear()
+    result = gaps.rank_pairs(
+        graph,
+        similar,
+        threshold=0.6,
+        max_score=0.92,
+        k=8,
+        hub_degree=40,
+        dismissed=set(),
+        targets=["s.md", "r.md", "g/x.md", "h/y.md"],
+    )
+    # Two root-level notes share the "" top folder (graphmark v0.10.0), so that pair is
+    # same-folder and ranks after the lower-scoring cross-folder pair; the equal-score
+    # pair is stored sorted whichever endpoint was scanned first.
+    assert [(a, b) for a, b, _ in result] == [("g/x.md", "h/y.md"), ("r.md", "s.md")]
 
 
 def test_gaps_py_imports_collaborators_only_as_module_attributes() -> None:
