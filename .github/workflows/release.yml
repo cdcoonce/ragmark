@@ -4,7 +4,10 @@ name: Release
 # runs the gate, then python-semantic-release reads the conventional-commit history since the
 # last tag, decides the bump, updates pyproject.toml + CHANGELOG.md, commits, tags
 # `v<version>`, and cuts a GitHub release. If (and only if) a new version was released, the
-# package is built and published to PyPI via OIDC Trusted Publishing — no API token stored.
+# package is built once, the wheel + sdist + a SHA256SUMS file are attached to that release
+# (a consumer with no package index pins the wheel by URL and hash, #209), and then the same
+# dist is published to PyPI via OIDC Trusted Publishing — no API token stored. The assets go up
+# BEFORE the PyPI step so a PyPI failure (the setup below is still pending) cannot take them down.
 #
 # One-time PyPI setup (Trusted Publishing, PENDING — Charles): pypi.org -> Your projects ->
 # Publishing -> add a *pending* trusted publisher with project: ragmark, owner: cdcoonce,
@@ -47,8 +50,39 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to PyPI
+      - name: Build the dist once
+        if: steps.release.outputs.released == 'true'
+        run: uv build
+
+      - name: Refuse a wheel that does not carry the released version
+        if: steps.release.outputs.released == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          wheels=(dist/ragmark-*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo "expected exactly one wheel in dist/, found: ${wheels[*]}" >&2
+            exit 1
+          fi
+          case "$(basename "${wheels[0]}")" in
+            "ragmark-${RELEASE_VERSION}-"*.whl) ;;
+            *) echo "wheel ${wheels[0]} is not version ${RELEASE_VERSION}" >&2; exit 1 ;;
+          esac
+
+      - name: Write SHA256SUMS (outside dist/, which PyPI would reject)
         if: steps.release.outputs.released == 'true'
         run: |
-          uv build
-          uv publish --trusted-publishing always
+          mkdir release-assets
+          (cd dist && sha256sum ragmark-*.whl ragmark-*.tar.gz) > release-assets/SHA256SUMS
+          cat release-assets/SHA256SUMS
+
+      - name: Attach the wheel, sdist and checksums to the GitHub release
+        if: steps.release.outputs.released == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: v${{ steps.release.outputs.version }}
+        run: gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz release-assets/SHA256SUMS --clobber
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
+        run: uv publish --trusted-publishing always
