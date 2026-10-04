@@ -1,0 +1,107 @@
+{
+  "runner": "pytest",
+  "test_command": [
+    "uv",
+    "run",
+    "--extra",
+    "dev",
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_release_workflow.py"
+  ],
+  "collect_command": [
+    "uv",
+    "run",
+    "--extra",
+    "dev",
+    "python",
+    "-m",
+    "pytest",
+    "--collect-only",
+    "-q",
+    "tests/test_release_workflow.py"
+  ],
+  "mutants": [
+    {
+      "label": "upload step runs even when no release was cut",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "        if: steps.release.outputs.released == 'true'\n        env:\n          GH_TOKEN",
+      "replace": "        env:\n          GH_TOKEN"
+    },
+    {
+      "label": "the build step also runs without a release",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "      - name: Build the dist once\n        if: steps.release.outputs.released == 'true'\n",
+      "replace": "      - name: Build the dist once\n"
+    },
+    {
+      "label": "publish rebuilds, so PyPI and the release can ship different bytes",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "        run: uv publish --trusted-publishing always",
+      "replace": "        run: |\n          uv build\n          uv publish --trusted-publishing always"
+    },
+    {
+      "label": "upload attaches only the wheel",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "dist/*.whl dist/*.tar.gz release-assets/SHA256SUMS --clobber",
+      "replace": "dist/*.whl --clobber"
+    },
+    {
+      "label": "wrong-version wheel passes the guard",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "*) echo \"wheel ${wheels[0]} is not version ${RELEASE_VERSION}\" >&2; exit 1 ;;",
+      "replace": "*) ;;"
+    },
+    {
+      "label": "guard matches a version prefix, not the whole version",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "\"ragmark-${RELEASE_VERSION}-\"*.whl) ;;",
+      "replace": "\"ragmark-${RELEASE_VERSION}\"*.whl) ;;"
+    },
+    {
+      "label": "guard accepts several wheels",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "if [ \"${#wheels[@]}\" -ne 1 ] || [ ! -f \"${wheels[0]}\" ]; then",
+      "replace": "if [ ! -f \"${wheels[0]}\" ]; then"
+    },
+    {
+      "label": "checksums are written into dist/, where PyPI rejects them",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "> release-assets/SHA256SUMS\n",
+      "replace": "> dist/SHA256SUMS\n"
+    },
+    {
+      "label": "checksums cover only the wheel",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "sha256sum ragmark-*.whl ragmark-*.tar.gz)",
+      "replace": "sha256sum ragmark-*.whl)"
+    },
+    {
+      "label": "job loses write permission on the release",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "contents: write # push",
+      "replace": "contents: read # push"
+    },
+    {
+      "label": "[control] drop the log echo of the checksum file",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "          cat release-assets/SHA256SUMS\n",
+      "replace": "",
+      "expect": "survived",
+      "why": "The cat only prints the file to the job log; nothing reads its output, no later step depends on it, and the file on disk is already written by the previous line, so removing it cannot change what is uploaded."
+    }
+  ]
+}

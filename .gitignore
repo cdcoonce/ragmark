@@ -31,3 +31,4 @@ venv/
 docs/dev-cycle/telemetry.jsonl
 docs/dev-cycle/last-run.md
 docs/dev-cycle/quarantine-log.md
+release-assets/
