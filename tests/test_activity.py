@@ -455,14 +455,139 @@ def test_non_note_committed_files_never_appear(git_vault) -> None:
     assert "drafts/excluded.md" not in paths
 
 
-def test_uncommitted_changes_not_reported_on_git_path(git_vault) -> None:
-    (git_vault.repo_root / "untracked.md").write_text("untracked content\n", encoding="utf-8")
-    (git_vault.repo_root / "old8.md").write_text("edited uncommitted\n", encoding="utf-8")
+def _set_mtime(path: Path, when: datetime) -> datetime:
+    """Pin *path*'s mtime to a whole-second instant and return it."""
+    when = when.replace(microsecond=0)
+    os.utime(path, (when.timestamp(), when.timestamp()))
+    return when
 
-    result = recent_activity(config=git_vault.config)
-    paths = {e.note_path for e in result}
-    assert "untracked.md" not in paths
+
+def test_modified_uncommitted_note_reported_by_mtime_even_if_commit_outside_window(
+    git_vault,
+) -> None:
+    note = git_vault.repo_root / "old8.md"  # last commit is 8 days ago
+    note.write_text("edited uncommitted\n", encoding="utf-8")
+    mtime = _set_mtime(note, datetime.now(UTC) - timedelta(hours=1))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["old8.md"].modified == _iso(mtime)
+
+    # An in-window committed note that is also dirty and has a newer mtime.
+    recent = git_vault.repo_root / "recent6.md"
+    recent.write_text("edited too\n", encoding="utf-8")
+    recent_mtime = _set_mtime(recent, datetime.now(UTC) - timedelta(hours=2))
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["recent6.md"].modified == _iso(recent_mtime)
+
+
+def test_new_untracked_note_reported_without_commit(git_vault) -> None:
+    note = git_vault.repo_root / "untracked.md"
+    note.write_text("untracked content\n", encoding="utf-8")
+    mtime = _set_mtime(note, datetime.now(UTC) - timedelta(hours=3))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["untracked.md"].modified == _iso(mtime)
+    assert by_path["untracked.md"].first_line == "untracked content"
+
+
+def test_nested_untracked_directory_note_reported(git_vault) -> None:
+    note = git_vault.repo_root / "brand" / "new" / "deep.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("deep content\n", encoding="utf-8")
+    mtime = _set_mtime(note, datetime.now(UTC) - timedelta(hours=1))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["brand/new/deep.md"].modified == _iso(mtime)
+
+
+def test_clean_committed_note_keeps_committer_time_despite_newer_mtime(git_vault) -> None:
+    note = git_vault.repo_root / "recent6.md"
+    _set_mtime(note, datetime.now(UTC) - timedelta(minutes=5))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["recent6.md"].modified == _iso(git_vault.note_times["recent6.md"])
+
+
+def test_dirty_note_with_mtime_older_than_commit_keeps_commit_time(git_vault) -> None:
+    note = git_vault.repo_root / "twice.md"  # committed 2 days ago
+    note.write_text("edited but mtime is stale\n", encoding="utf-8")
+    _set_mtime(note, datetime.now(UTC) - timedelta(days=4))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault.config)}
+    assert by_path["twice.md"].modified == _iso(git_vault.note_times["twice.md"])
+
+
+def test_dirty_note_with_out_of_window_mtime_and_old_commit_does_not_appear(git_vault) -> None:
+    note = git_vault.repo_root / "old8.md"
+    note.write_text("edited, ancient mtime\n", encoding="utf-8")
+    _set_mtime(note, datetime.now(UTC) - timedelta(days=9))
+    untracked = git_vault.repo_root / "ancient-untracked.md"
+    untracked.write_text("ancient\n", encoding="utf-8")
+    _set_mtime(untracked, datetime.now(UTC) - timedelta(days=9))
+
+    paths = {e.note_path for e in recent_activity(config=git_vault.config)}
     assert "old8.md" not in paths
+    assert "ancient-untracked.md" not in paths
+
+
+def test_deleted_tracked_note_never_appears_in_working_tree_pass(git_vault) -> None:
+    (git_vault.repo_root / "old8.md").unlink()  # last commit outside window
+    (git_vault.repo_root / "recent6.md").unlink()  # last commit inside window
+
+    paths = {e.note_path for e in recent_activity(config=git_vault.config)}
+    assert "old8.md" not in paths
+    assert "recent6.md" not in paths
+
+
+def test_non_indexable_untracked_files_never_appear(git_vault) -> None:
+    root = git_vault.repo_root
+    (root / "scratch.txt").write_text("not a note\n", encoding="utf-8")
+    (root / ".claude").mkdir(exist_ok=True)
+    (root / ".claude" / "new.md").write_text("hidden\n", encoding="utf-8")
+    outside = root.parent / "outside-target-2.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    (root / "linked.md").symlink_to(outside)
+    (root / CONTEXT_FILE).write_text("personal\n", encoding="utf-8")  # dirty, not a note
+    config = dataclasses.replace(git_vault.config, excluded_dirs=frozenset({"drafts"}))
+    (root / "drafts" / "fresh.md").write_text("excluded\n", encoding="utf-8")
+
+    paths = {e.note_path for e in recent_activity(config=config)}
+    assert "scratch.txt" not in paths
+    assert ".claude/new.md" not in paths
+    assert "linked.md" not in paths
+    assert CONTEXT_FILE not in paths
+    assert "drafts/fresh.md" not in paths
+
+
+def test_subdirectory_vault_reports_vault_relative_uncommitted_paths(git_vault_subdir) -> None:
+    vault_root = git_vault_subdir.config.vault_root
+    repo_root = vault_root.parent
+    (repo_root / "outside-new.md").write_text("outside\n", encoding="utf-8")
+
+    edited = vault_root / "notes" / "a.md"
+    edited.write_text("edited uncommitted\n", encoding="utf-8")
+    edited_mtime = _set_mtime(edited, datetime.now(UTC) - timedelta(hours=1))
+    fresh = vault_root / "fresh" / "b.md"
+    fresh.parent.mkdir()
+    fresh.write_text("fresh\n", encoding="utf-8")
+    fresh_mtime = _set_mtime(fresh, datetime.now(UTC) - timedelta(hours=2))
+
+    by_path = {e.note_path: e for e in recent_activity(config=git_vault_subdir.config)}
+    assert set(by_path) == {"notes/a.md", "fresh/b.md"}
+    assert by_path["notes/a.md"].modified == _iso(edited_mtime)
+    assert by_path["fresh/b.md"].modified == _iso(fresh_mtime)
+
+
+def test_repo_without_commits_still_falls_back_to_mtime(tmp_path: Path) -> None:
+    repo_root, _env, sentinel = _setup_repo(tmp_path, "repo-empty")
+    note = repo_root / "first.md"
+    note.write_text("first note\n", encoding="utf-8")
+    mtime = _set_mtime(note, datetime.now(UTC) - timedelta(days=2))
+    (repo_root / CONTEXT_FILE).write_text("work\n", encoding="utf-8")
+
+    result = recent_activity(config=RagmarkConfig.for_vault(repo_root))
+    assert [(e.note_path, e.modified) for e in result] == [("first.md", _iso(mtime))]
+    assert not sentinel.exists()
 
 
 def test_git_unavailable_falls_back_to_mtime(
