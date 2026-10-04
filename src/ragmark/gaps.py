@@ -1,7 +1,7 @@
 """Gap detection — the policy migrates INTO ragmark (the-vault#143, decision 2).
 
-``rank_pairs`` reimplements graphmark v0.9.1's ``metrics.gaps()``
-(``src/graphmark/metrics.py:179-251``, the version ``uv.lock`` pins)
+``rank_pairs`` reimplements graphmark v0.10.0's ``metrics.gaps()``
+(``src/graphmark/metrics.py``, the version ``uv.lock`` pins)
 faithfully. Deliberate differences from that source:
 
 1. No ``sig`` in the output — ``rank_pairs`` returns bare ``(a, b, score)``
@@ -44,6 +44,8 @@ _DEFAULT_DISMISSAL_STORE = ".claude/data/connect-dismissed.json"
 
 
 def _sig(a: str, b: str) -> str:
+    # Identical to ``dismiss.weaklink_sig`` (pinned by tests/test_gaps.py); kept local because
+    # the source-scan test bans ``weaklink_sig`` references in this module.
     return "weaklink|" + "|".join(sorted([a, b]))
 
 
@@ -106,11 +108,21 @@ def rank_pairs(
             key = frozenset({rel, other})
             if key not in dedup or score > dedup[key][2]:
                 dedup[key] = (rel, other, score)
+            elif score == dedup[key][2]:
+                # Equal-score duplicate: store the pair sorted so the result does not
+                # depend on target iteration order (graphmark v0.10.0).
+                dedup[key] = (*sorted((rel, other)), score)
+
+    def _top(path: str) -> str:
+        # A root-level note has no top-level folder ("" — graphmark v0.10.0), so it is
+        # cross-folder against every foldered note.
+        head, sep, _ = path.partition("/")
+        return head if sep else ""
 
     def _rank_key(item: tuple[str, str, float]) -> tuple[bool, bool, float, str, str]:
         a, b, score = item
         hubby = _is_hub(a) or _is_hub(b)
-        cross = a.split("/", 1)[0] != b.split("/", 1)[0]
+        cross = _top(a) != _top(b)
         return (hubby, not cross, -score, a, b)
 
     ranked = sorted(dedup.values(), key=_rank_key)
@@ -152,16 +164,30 @@ def gaps(
     store_path = config.vault_root / (dismissal_store or _DEFAULT_DISMISSAL_STORE)
     records = dismiss.load_dismissed(config.vault_root, path=str(store_path))
     dismissed: set[str] = set()
+    root = config.vault_root
     for sig, record in records.items():
-        if len(gate.filter_visible([record["a"], record["b"]], config)) != 2:
+        # Malformed or out-of-vault records are skipped, as graphmark v0.10.0's
+        # ``active_dismissed_sigs`` does.
+        if not isinstance(record, dict):
             continue
-        a_path = config.vault_root / record["a"]
-        b_path = config.vault_root / record["b"]
+        a, b, a_hash, b_hash = (
+            record.get("a"),
+            record.get("b"),
+            record.get("a_hash"),
+            record.get("b_hash"),
+        )
+        if not all(isinstance(v, str) and v for v in (a, b, a_hash, b_hash)):
+            continue
+        if not dismiss._resolves_within(root, a) or not dismiss._resolves_within(root, b):
+            continue
+        if len(gate.filter_visible([a, b], config)) != 2:
+            continue
+        a_path, b_path = root / a, root / b
         if (
-            a_path.exists()
-            and b_path.exists()
-            and dismiss.content_hash(a_path) == record["a_hash"]
-            and dismiss.content_hash(b_path) == record["b_hash"]
+            a_path.is_file()
+            and b_path.is_file()
+            and dismiss.content_hash(a_path) == a_hash
+            and dismiss.content_hash(b_path) == b_hash
         ):
             dismissed.add(sig)
 

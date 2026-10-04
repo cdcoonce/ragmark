@@ -1,4 +1,4 @@
-"""Parity tests for ``rank_pairs`` against graphmark v0.9.1's ``metrics.gaps()``.
+"""Parity tests for ``rank_pairs`` against graphmark v0.10.0's ``metrics.gaps()``.
 
 Fixture vault (`tests/fixtures/gaps/vault/`): band-edge probes (lo/hi exactly on
 threshold/max_score, below/above just outside), a real wikilink (linkA -> linkB) for
@@ -63,7 +63,7 @@ def _sig(a: str, b: str) -> str:
 
 def _build_graph():
     graph = graphmark.build(FIXTURE_VAULT)
-    # graphmark.build drops self-links (v0.9.1 graph.py:734), so the self-loop that makes
+    # graphmark.build drops self-links (v0.10.0 graph.py), so the self-loop that makes
     # hubn.md a hub is injected here, in memory, after the build.
     graph.out_links["hubn.md"].add("hubn.md")
     graph.back_links["hubn.md"].add("hubn.md")
@@ -595,17 +595,76 @@ def test_dismissal_of_a_deleted_note_is_inactive(
     assert _pairs(gaps.gaps(config=config)) == {_pair(survivor, "brain/c.md")}
 
 
-def test_malformed_dismissal_record_raises_key_error(
+def test_malformed_dismissal_record_is_skipped_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # graphmark v0.10.0 skips a malformed record instead of raising KeyError.
+    config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
+    store = config.vault_root / _DEFAULT_STORE
+    store.parent.mkdir(parents=True)
+    sig = "weaklink|brain/a.md|brain/b.md"
+    store.write_text(json.dumps({sig: {"a": "brain/a.md", "b": "brain/b.md"}, "junk": 3}))
+    _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_out_of_vault_dismissal_record_is_skipped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _make_vault(tmp_path, ["brain/a.md", "brain/b.md"])
     store = config.vault_root / _DEFAULT_STORE
     store.parent.mkdir(parents=True)
-    sig = "weaklink|brain/a.md|brain/b.md"
-    store.write_text(json.dumps({sig: {"a": "brain/a.md", "b": "brain/b.md"}}))
+    a_path, b_path = config.vault_root / "brain/a.md", config.vault_root / "brain/b.md"
+    store.write_text(
+        json.dumps(
+            {
+                "weaklink|../x.md|brain/b.md": {
+                    "a": "../x.md",
+                    "b": "brain/b.md",
+                    "a_hash": dismiss.content_hash(a_path),
+                    "b_hash": dismiss.content_hash(b_path),
+                }
+            }
+        )
+    )
     _stub_similar(monkeypatch, _both_ways("brain/a.md", "brain/b.md", 0.8))
-    with pytest.raises(KeyError):
-        gaps.gaps(config=config)
+    assert _pairs(gaps.gaps(config=config)) == {_pair("brain/a.md", "brain/b.md")}
+
+
+def test_sig_is_identical_to_dismiss_weaklink_sig() -> None:
+    for a, b in (("a.md", "b.md"), ("z/y.md", "a.md"), ("x.md", "x.md")):
+        assert gaps._sig(a, b) == dismiss.weaklink_sig(a, b)
+
+
+def test_two_root_level_notes_are_same_folder_and_equal_score_pair_is_sorted() -> None:
+    sims = {
+        "s.md": [("r.md", 0.8)],
+        "r.md": [("s.md", 0.8)],
+        "g/x.md": [("h/y.md", 0.65)],
+        "h/y.md": [("g/x.md", 0.65)],
+    }
+
+    def similar(rel: str, k: int) -> list[tuple[str, float]]:
+        return sims.get(rel, [])
+
+    graph = graphmark.build(FIXTURE_VAULT)
+    graph.nodes.clear()
+    graph.out_links.clear()
+    graph.back_links.clear()
+    result = gaps.rank_pairs(
+        graph,
+        similar,
+        threshold=0.6,
+        max_score=0.92,
+        k=8,
+        hub_degree=40,
+        dismissed=set(),
+        targets=["s.md", "r.md", "g/x.md", "h/y.md"],
+    )
+    # Two root-level notes share the "" top folder (graphmark v0.10.0), so that pair is
+    # same-folder and ranks after the lower-scoring cross-folder pair; the equal-score
+    # pair is stored sorted whichever endpoint was scanned first.
+    assert [(a, b) for a, b, _ in result] == [("g/x.md", "h/y.md"), ("r.md", "s.md")]
 
 
 def test_gaps_py_imports_collaborators_only_as_module_attributes() -> None:
