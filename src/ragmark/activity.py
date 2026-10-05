@@ -3,7 +3,7 @@
 Decided shape (the-vault#142, accepted live): `{note_path, modified,
 first_line}`, newest first, **git-log-backed** — the vault is always a repo,
 and mtimes lie after a fresh sync — with an mtime fallback for non-repo
-vaults. Results are context-gated like every other surface.
+vaults, plus uncommitted working-tree changes. Results are context-gated like every other surface.
 """
 
 from __future__ import annotations
@@ -36,7 +36,9 @@ def recent_activity(
     cutoff = (datetime.now(UTC) - timedelta(days=days)).replace(microsecond=0)
 
     candidates = _git_candidates(config, cutoff)
-    if candidates is None:
+    if candidates is not None:
+        _add_working_tree_candidates(config, cutoff, candidates)
+    else:
         candidates = _mtime_candidates(config, cutoff)
 
     visible_paths = gate.filter_visible(list(candidates.keys()), config)
@@ -72,6 +74,15 @@ def _first_nonempty_line(body: str) -> str:
     return ""
 
 
+def _scrubbed_git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    env.pop("GIT_INDEX_FILE", None)
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    return env
+
+
 def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, datetime] | None:
     """Vault-relative path -> latest in-window committer time, or None if git is unusable.
 
@@ -81,11 +92,7 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
     """
     vault_root = config.vault_root
     git = ["git", "-C", str(vault_root), "-c", "core.quotePath=false"]
-    env = dict(os.environ)
-    env.pop("GIT_DIR", None)
-    env.pop("GIT_WORK_TREE", None)
-    env.pop("GIT_INDEX_FILE", None)
-    env["GIT_NO_LAZY_FETCH"] = "1"
+    env = _scrubbed_git_env()
     try:
         prefix_result = subprocess.run(
             [*git, "rev-parse", "--show-prefix"],
@@ -138,6 +145,71 @@ def _git_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, dateti
         if rel_path not in candidates or current_dt > candidates[rel_path]:
             candidates[rel_path] = current_dt
     return candidates
+
+
+def _add_working_tree_candidates(
+    config: RagmarkConfig, cutoff: datetime, candidates: dict[str, datetime]
+) -> None:
+    """Fold uncommitted indexable notes into *candidates*, timestamped by file mtime.
+
+    Only paths named by `git status` are stat'd; unstat-able paths (deleted files) are
+    skipped. A path takes its mtime only if the mtime is inside the window and newer
+    than its committed time (or it has no in-window commit). Best-effort: if git
+    fails here, the committed-history candidates stand as they are.
+    """
+    vault_root = config.vault_root
+    git = ["git", "-C", str(vault_root), "-c", "core.quotePath=false"]
+    env = _scrubbed_git_env()
+    try:
+        prefix_result = subprocess.run(
+            [*git, "rev-parse", "--show-prefix"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            check=True,
+            env=env,
+        )
+        status_result = subprocess.run(
+            [
+                *git,
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--no-renames",
+                "--",
+                ".",
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            check=True,
+            env=env,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return
+
+    prefix = prefix_result.stdout.rstrip("\n")
+
+    for entry in status_result.stdout.split("\0"):
+        path = entry[3:]  # "XY <path>"
+        if not path:
+            continue
+        if prefix and not path.startswith(prefix):
+            continue
+        rel_path = path[len(prefix) :] if prefix else path
+        resolved = vault_root / rel_path
+        if not gate.is_indexable_note(resolved, config):
+            continue
+        try:
+            mtime = resolved.stat().st_mtime
+        except OSError:
+            continue
+        dt = datetime.fromtimestamp(mtime, tz=UTC)
+        if dt < cutoff:
+            continue
+        if rel_path not in candidates or dt > candidates[rel_path]:
+            candidates[rel_path] = dt
 
 
 def _mtime_candidates(config: RagmarkConfig, cutoff: datetime) -> dict[str, datetime]:
