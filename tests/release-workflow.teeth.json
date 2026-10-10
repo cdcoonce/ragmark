@@ -39,11 +39,25 @@
       "replace": "      - name: Build the dist once\n"
     },
     {
-      "label": "publish rebuilds, so PyPI and the release can ship different bytes",
+      "label": "a PyPI publish step is re-added (the ragmark name there is not ours)",
       "file": "../.github/workflows/release.yml",
       "oracle": "real",
-      "find": "        run: uv publish --trusted-publishing always",
-      "replace": "        run: |\n          uv build\n          uv publish --trusted-publishing always"
+      "find": "release-assets/SHA256SUMS --clobber\n",
+      "replace": "release-assets/SHA256SUMS --clobber\n\n      - name: Publish to PyPI\n        if: steps.release.outputs.released == 'true'\n        run: uv publish --trusted-publishing always\n"
+    },
+    {
+      "label": "the job asks for an OIDC token again (it only ever existed for PyPI)",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "      contents: write # push the version bump commit + tag, create the GitHub release\n",
+      "replace": "      contents: write # push the version bump commit + tag, create the GitHub release\n      id-token: write\n"
+    },
+    {
+      "label": "upload rebuilds, so the asset bytes differ from the version-checked wheel",
+      "file": "../.github/workflows/release.yml",
+      "oracle": "real",
+      "find": "run: gh release upload \"$RELEASE_TAG\"",
+      "replace": "run: uv build && gh release upload \"$RELEASE_TAG\""
     },
     {
       "label": "upload attaches only the wheel",
@@ -74,7 +88,7 @@
       "replace": "if [ ! -f \"${wheels[0]}\" ]; then"
     },
     {
-      "label": "checksums are written into dist/, where PyPI rejects them",
+      "label": "checksums are written into dist/, which must hold only the built distributions",
       "file": "../.github/workflows/release.yml",
       "oracle": "real",
       "find": "> release-assets/SHA256SUMS\n",

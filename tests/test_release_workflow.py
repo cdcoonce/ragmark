@@ -4,9 +4,12 @@ A consumer that cannot install from an index (the-workshop's workbench runtime,
 the-workshop#1120) pins a release asset by URL and sha256. v0.1.0 shipped with no
 assets, so there was nothing to pin. These tests read `.github/workflows/release.yml`
 and pin the structure that fixes it: build the dist once, check the wheel carries the
-released version, upload wheel + SHA256SUMS to the release the tag names, and do all
-of it BEFORE the PyPI publish, which fails until Trusted Publishing is configured and
-must not take the assets down with it.
+released version, and upload wheel + sdist + SHA256SUMS to the release the tag names.
+
+The release is published as GitHub release assets ONLY. The `ragmark` project name on PyPI
+belongs to an unrelated project (registered 2026-09-19, not by us), so the old `uv publish`
+step failed with 422 invalid-publisher on every release, after the assets were up. It was
+removed on purpose; `test_nothing_publishes_to_pypi` keeps it from quietly coming back.
 """
 
 from __future__ import annotations
@@ -22,6 +25,9 @@ import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 RELEASED = "steps.release.outputs.released == 'true'"
+# What a package-index publish step looks like: `uv publish`, twine, the PyPA publish action,
+# or any Trusted Publishing switch. A GitHub release upload matches none of these.
+PUBLISH_MARKERS = ("uv publish", "twine", "pypi-publish", "trusted-publishing")
 
 
 @pytest.fixture(scope="module")
@@ -44,15 +50,29 @@ def test_the_job_may_write_to_the_release() -> None:
     assert perms["contents"] == "write"
 
 
-def test_the_dist_is_built_once_and_before_both_consumers(steps: list[dict]) -> None:
+def test_the_job_requests_no_oidc_token() -> None:
+    """`id-token: write` existed only for PyPI Trusted Publishing; nothing else uses it."""
+    perms = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["permissions"]
+    assert perms.get("id-token") != "write"
+
+
+def test_the_dist_is_built_once_and_before_the_upload(steps: list[dict]) -> None:
     builds = [i for i, s in enumerate(steps) if "uv build" in s.get("run", "")]
-    assert len(builds) == 1, "build the dist once; upload and publish must ship the same bytes"
+    assert len(builds) == 1, "build the dist once; every consumer must ship the same bytes"
     assert builds[0] < _index(steps, "gh release upload")
-    assert builds[0] < _index(steps, "uv publish")
 
 
-def test_assets_are_uploaded_before_the_pypi_publish(steps: list[dict]) -> None:
-    assert _index(steps, "gh release upload") < _index(steps, "uv publish")
+def test_nothing_publishes_to_pypi(steps: list[dict]) -> None:
+    """The release is GitHub release assets only; the PyPI `ragmark` name is not ours."""
+    publishing = [
+        step.get("name", step.get("run", step.get("uses", "?")))
+        for step in steps
+        if any(
+            marker in f"{step.get('run', '')} {step.get('uses', '')}".lower()
+            for marker in PUBLISH_MARKERS
+        )
+    ]
+    assert not publishing, f"a step publishes to a package index: {publishing}"
 
 
 def test_the_upload_attaches_the_wheel_and_a_checksum_to_the_tagged_release(
@@ -138,10 +158,10 @@ def test_the_checksum_file_lists_the_real_hashes_and_stays_out_of_dist(
         p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path / "dist").iterdir()
     }
     assert {k.strip(): v for k, v in listed.items()} == expected
-    assert not (tmp_path / "dist" / "SHA256SUMS").exists(), "PyPI would reject it in dist/"
+    assert not (tmp_path / "dist" / "SHA256SUMS").exists(), "dist/ holds only the built dists"
 
 
-@pytest.mark.parametrize("needle", ["uv build", "SHA256SUMS", "gh release upload", "uv publish"])
+@pytest.mark.parametrize("needle", ["uv build", "SHA256SUMS", "gh release upload"])
 def test_every_post_release_step_only_runs_when_a_release_was_cut(
     steps: list[dict], needle: str
 ) -> None:

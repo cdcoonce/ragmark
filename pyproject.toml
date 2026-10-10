@@ -88,8 +88,9 @@ markers = [
 [tool.semantic_release]
 # Deploy-on-promotion, graphmark's exact machinery: when dev is promoted to main, the release
 # workflow runs python-semantic-release, which reads conventional commits since the last tag,
-# bumps project.version, writes CHANGELOG.md, tags v<version>, cuts a GitHub release, and
-# publishes to PyPI via OIDC Trusted Publishing.
+# bumps project.version, writes CHANGELOG.md, tags v<version>, cuts a GitHub release, and the
+# workflow attaches the wheel + sdist + SHA256SUMS to it. Nothing is published to PyPI: the
+# `ragmark` project name there belongs to an unrelated project.
 version_toml = ["pyproject.toml:project.version"]
 # Relock so the release commit carries a lockfile matching the stamped version; the package
 # name is a literal, and tests/test_lockfile_version.py pins it to project.name because uv
