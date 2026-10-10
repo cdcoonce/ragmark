@@ -4,15 +4,14 @@ name: Release
 # runs the gate, then python-semantic-release reads the conventional-commit history since the
 # last tag, decides the bump, updates pyproject.toml + CHANGELOG.md, commits, tags
 # `v<version>`, and cuts a GitHub release. If (and only if) a new version was released, the
-# package is built once, the wheel + sdist + a SHA256SUMS file are attached to that release
-# (a consumer with no package index pins the wheel by URL and hash, #209), and then the same
-# dist is published to PyPI via OIDC Trusted Publishing — no API token stored. The assets go up
-# BEFORE the PyPI step so a PyPI failure (the setup below is still pending) cannot take them down.
+# package is built once and the wheel + sdist + a SHA256SUMS file are attached to that release
+# (a consumer with no package index pins the wheel by URL and hash, #209).
 #
-# One-time PyPI setup (Trusted Publishing, PENDING — Charles): pypi.org -> Your projects ->
-# Publishing -> add a *pending* trusted publisher with project: ragmark, owner: cdcoonce,
-# repo: ragmark, workflow: release.yml (environment blank). Until that exists, the publish
-# step fails and everything before it (version, changelog, tag, GitHub release) still works.
+# GitHub release assets are the ONLY distribution channel; there is deliberately no PyPI step.
+# The `ragmark` project name on PyPI belongs to an unrelated project, so a publish there could
+# never succeed (v0.1.0 and v0.2.0 both failed with 422 invalid-publisher, after the assets
+# were already attached). Nothing consumes ragmark through an index: consumers pin the release
+# wheel by URL and hash. This job therefore requests no OIDC (`id-token`) permission either.
 
 on:
   push:
@@ -27,7 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the version bump commit + tag, create the GitHub release
-      id-token: write # PyPI Trusted Publishing (OIDC)
     steps:
       - name: Checkout (full history + tags)
         uses: actions/checkout@v4
@@ -69,7 +67,7 @@ jobs:
             *) echo "wheel ${wheels[0]} is not version ${RELEASE_VERSION}" >&2; exit 1 ;;
           esac
 
-      - name: Write SHA256SUMS (outside dist/, which PyPI would reject)
+      - name: Write SHA256SUMS (outside dist/, which holds only the built distributions)
         if: steps.release.outputs.released == 'true'
         run: |
           mkdir release-assets
@@ -82,7 +80,3 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: v${{ steps.release.outputs.version }}
         run: gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz release-assets/SHA256SUMS --clobber
-
-      - name: Publish to PyPI
-        if: steps.release.outputs.released == 'true'
-        run: uv publish --trusted-publishing always

@@ -184,8 +184,10 @@ def render_for_embedding(body: str) -> str:
 
     Fenced code blocks and inline code spans are carved out first and left
     byte-for-byte untouched; wikilink, heading, and emphasis stripping run
-    only over the remaining prose.
+    only over the remaining prose. Literal NUL characters are dropped first, so
+    every NUL in the stashed text is a placeholder the function inserted itself.
     """
+    body = body.replace("\x00", "")
     stashed: list[str] = []
 
     def _stash(match: re.Match[str]) -> str:
@@ -203,4 +205,8 @@ def render_for_embedding(body: str) -> str:
     stripped = _HEADING_RE.sub("", stripped)
     stripped = _strip_emphasis(stripped)
 
-    return _PLACEHOLDER_RE.sub(lambda m: stashed[int(m.group(1))], stripped)
+    # A stashed inline span can itself contain a fence placeholder, so restore
+    # until none remain (every NUL left is one this function inserted).
+    while _PLACEHOLDER_RE.search(stripped):
+        stripped = _PLACEHOLDER_RE.sub(lambda m: stashed[int(m.group(1))], stripped)
+    return stripped
