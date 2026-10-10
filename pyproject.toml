@@ -1,6 +1,6 @@
 [project]
 name = "ragmark"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first retrieval over markdown / [[wikilink]] vaults — hybrid search, wikilink-aware context, first-party MCP surface."
 readme = "README.md"
 requires-python = ">=3.11"

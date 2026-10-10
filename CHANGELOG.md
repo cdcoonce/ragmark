@@ -1,6 +1,79 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-10-10)
+
+### Bug Fixes
+
+- **dismiss**: Re-sync weaklink_sig with graphmark 0.10.1
+  ([#213](https://github.com/cdcoonce/ragmark/pull/213),
+  [`8c866de`](https://github.com/cdcoonce/ragmark/commit/8c866de8f557a1a56af48326f730466761486ea8))
+
+Pairs whose paths contain '|' no longer collide: weaklink_sig and gaps._sig use the escaped
+  weaklink2| format for them and keep the legacy format byte-identical otherwise. gaps() recomputes
+  each dismissal signature from the record instead of trusting the stored key, so legacy pipe keys
+  still apply. Locks graphmark 0.10.1 and raises the floor to match.
+
+Closes #204
+
+- **parse**: Drop literal NULs before placeholder stashing in render_for_embedding
+  ([#214](https://github.com/cdcoonce/ragmark/pull/214),
+  [`fb8ce1a`](https://github.com/cdcoonce/ragmark/commit/fb8ce1a70e363a25ab832fdfb7fc53c7d0cf2ccb))
+
+A literal \x00<n>\x00 already in a note was restored as stashed content that belongs elsewhere,
+  duplicating a code span or raising IndexError. Drop every literal NUL at the start of
+  render_for_embedding so each NUL later seen is one the function inserted itself.
+
+Closes #159
+
+- **parse**: Restore nested placeholders until none remain in render_for_embedding (#208)
+  ([#220](https://github.com/cdcoonce/ragmark/pull/220),
+  [`b5c0bf9`](https://github.com/cdcoonce/ragmark/commit/b5c0bf93a1fb869aa1c7fd1234ad198e0ab49c52))
+
+A lone-CR inline code span can swallow a fence placeholder, and the single-pass restore did not
+  rescan its own replacement, leaking the raw NUL placeholder. Restore in a loop until none remain;
+  no other restore or stash behavior changes.
+
+### Continuous Integration
+
+- **release**: Stop publishing to PyPI; the project name belongs to another project
+  ([#249](https://github.com/cdcoonce/ragmark/pull/249),
+  [`6698925`](https://github.com/cdcoonce/ragmark/commit/6698925b2afd8ea27d12a88358b697a5c998aeeb))
+
+The release workflow's "Publish to PyPI" step failed with 422 invalid-publisher on v0.1.0 and again
+  on v0.2.0. The `ragmark` project name on PyPI was never registered by us: another account created
+  it on 2026-09-19 (an unrelated RAG-evaluation tool), so no trusted publisher of ours can ever
+  match it.
+
+The wheel, sdist and SHA256SUMS are attached to the GitHub release before that step runs, so the
+  releases themselves were unaffected; every release just ended in a red job. Nothing consumes
+  ragmark through an index (consumers pin the release wheel by URL and hash), so the step is removed
+  rather than repaired.
+
+- release.yml: drop the "Publish to PyPI" step and the PENDING Trusted Publisher setup notes; drop
+  `id-token: write`, which existed only for that step. - tests: replace the "assets upload before
+  the PyPI publish" ordering test with `test_nothing_publishes_to_pypi` and
+  `test_the_job_requests_no_oidc_token`; the teeth spec swaps its stale `uv publish` mutants for
+  ones that re-add the step and the permission. - docs/ROADMAP.md and the pyproject.toml comment no
+  longer say ragmark is published on PyPI; the ROADMAP records PyPI publishing as decided against,
+  with the reason.
+
+The distribution name, `importlib.metadata.version("ragmark")` and the release asset flow are
+  unchanged.
+
+### Features
+
+- **activity**: Surface uncommitted working-tree changes in recent_activity (#182)
+  ([#221](https://github.com/cdcoonce/ragmark/pull/221),
+  [`b0c6bf8`](https://github.com/cdcoonce/ragmark/commit/b0c6bf8d2050de2082575e43141fc062c3a1c69c))
+
+Refs #182
+
+- **index**: Report embedded vs chunkable char conservation in RefreshReport (#75)
+  ([#250](https://github.com/cdcoonce/ragmark/pull/250),
+  [`be58d51`](https://github.com/cdcoonce/ragmark/commit/be58d51ce816996c11c4d300a9300299251d2a5f))
+
+
 ## v0.2.0 (2026-10-04)
 
 ### Bug Fixes
