@@ -10,9 +10,12 @@
 Local-first, headless **retrieval over the owner's whole vault** — hybrid chunk search,
 note-level similarity, wikilink-aware context expansion, and a first-party MCP surface —
 consumable by scripts/CI and by agents, with embeddings local and zero query-time egress.
-Published on PyPI; absorbs the vault's proven-but-defective vendored machinery
-(`semantic_index.py`, `vault_mcp.py`) into one tested package. Identity: personal
-infrastructure with a public correctness story (graphmark's identity, applied to retrieval).
+Distributed as GitHub release assets (wheel, sdist, SHA256SUMS), pinned by URL and hash —
+**not published on PyPI** (the earlier "Published on PyPI" intent was decided against on
+2026-10-10: the `ragmark` project name there belongs to an unrelated project). Absorbs the
+vault's proven-but-defective vendored machinery (`semantic_index.py`, `vault_mcp.py`) into
+one tested package. Identity: personal infrastructure with a public correctness story
+(graphmark's identity, applied to retrieval).
 
 The central fact of this repo: **there is no parity oracle.** The cutover improves behavior
 in the same motion as absorbing it (the-vault#143), so correctness is pinned by a
@@ -23,8 +26,9 @@ gating). The harness came WITH the seed; every retrieval-touching slice runs it.
 
 ## What's shipped (baseline — do not re-propose)
 
-- **The seed** (hand-authored): packaging with deploy-on-promotion (semantic-release +
-  PyPI Trusted Publishing, graphmark's machinery), the CI gate (2 OS × py3.11–3.13 +
+- **The seed** (hand-authored): packaging with deploy-on-promotion (semantic-release cutting
+  GitHub releases with the wheel, sdist and SHA256SUMS attached — graphmark's machinery
+  minus PyPI publishing, which was dropped), the CI gate (2 OS × py3.11–3.13 +
   teeth-check), typed public interfaces for every module, the **gate implemented**
   (fail-closed machine-context scoping + resolve-then-contain boundary, migrated from
   `vault_mcp.py`), the **store's infrastructure** (SQLite schema, atomic writes, model
@@ -96,3 +100,5 @@ Generation until a concrete headless-answers consumer exists (then: citations ar
 from the retriever, never model-asserted quotes; Ollama only via `ragmark[generate]`).
 Cloud/API embeddings. Write surfaces over MCP. Interactive UI / Obsidian plugin.
 Entity-extraction GraphRAG. Embeddings inside graphmark (reaffirmed both ways, 2026-08-02).
+Publishing to PyPI (decided against, 2026-10-10: the `ragmark` name there is an unrelated
+project's; releases are GitHub release assets only — see `.github/workflows/release.yml`).
