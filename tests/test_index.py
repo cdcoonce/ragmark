@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ragmark import index
+from ragmark import chunk as chunk_mod
+from ragmark import index, parse
 from ragmark.config import RagmarkConfig
 from ragmark.embed import Embedder, FastembedEmbedder
 from ragmark.model import ModelIdentity
@@ -302,3 +303,95 @@ def test_balanced_code_fences_yield_no_defects(tmp_path: Path) -> None:
     report = index.reindex(config, store, RecordingEmbedder())
 
     assert report.defects == ()
+
+
+# --- char conservation surfaced on the report (#75) -------------------------------
+
+
+def _chunkable(text: str) -> int:
+    meta, body = parse.parse_note(text)
+    return len(parse.render_for_embedding(body)) + len(meta.description or "")
+
+
+def _embedded(rel: str, text: str) -> int:
+    meta, body = parse.parse_note(text)
+    chunks = chunk_mod.chunk_note(rel, body, meta, RecordingEmbedder().count_tokens)
+    return sum(len(c.text) for c in chunks)
+
+
+def test_first_refresh_sums_chars_over_every_note(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    seed_vault(config)
+    store = IndexStore(config.index_dir)
+
+    report = index.refresh(config, store, RecordingEmbedder())
+
+    assert report.chars_chunkable == _chunkable(NOTE_A) + _chunkable(NOTE_B)
+    assert report.chars_embedded == _embedded("a.md", NOTE_A) + _embedded("b.md", NOTE_B)
+    assert report.chars_chunkable > 0
+
+
+def test_unchanged_and_touched_notes_are_not_re_summed(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    seed_vault(config)
+    store = IndexStore(config.index_dir)
+    embedder = RecordingEmbedder()
+    index.refresh(config, store, embedder)
+
+    second = index.refresh(config, store, embedder)
+    assert second.chars_chunkable == 0
+    assert second.chars_embedded == 0
+
+    write_note(config, "a.md", NOTE_A, BASE_MTIME + 1_000_000_000)
+    touched = index.refresh(config, store, embedder)
+    assert touched.updated == 0
+    assert touched.chars_chunkable == 0
+    assert touched.chars_embedded == 0
+
+
+def test_rewritten_note_reports_only_its_own_chars(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    seed_vault(config)
+    store = IndexStore(config.index_dir)
+    embedder = RecordingEmbedder()
+    index.refresh(config, store, embedder)
+    new_text = "---\ndescription: Fresh summary.\n---\n# Note A\n\nRewritten body.\n"
+    write_note(config, "a.md", new_text, BASE_MTIME + 1_000_000_000)
+
+    report = index.refresh(config, store, embedder)
+
+    assert report.updated == 1
+    assert report.chars_chunkable == _chunkable(new_text)
+    assert report.chars_embedded == _embedded("a.md", new_text)
+
+
+def test_report_chars_conserve_for_a_heading_wikilink_description_note(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    text = "---\ndescription: About apples.\n---\n# Apples\n\nSee [[Pears]] for more.\n"
+    write_note(config, "apples.md", text, BASE_MTIME)
+    store = IndexStore(config.index_dir)
+
+    report = index.refresh(config, store, RecordingEmbedder())
+
+    assert report.chars_chunkable > 0
+    assert report.chars_chunkable == report.chars_embedded
+
+
+def test_report_exposes_chunks_lost_by_the_chunker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    text = "# One\n\nFirst section body.\n\n# Two\n\nSecond section body.\n"
+    write_note(config, "two.md", text, BASE_MTIME)
+    store = IndexStore(config.index_dir)
+    real = chunk_mod.chunk_note
+
+    def drop_last(*args, **kwargs):
+        return real(*args, **kwargs)[:-1]
+
+    monkeypatch.setattr(index.chunk_mod, "chunk_note", drop_last)
+
+    report = index.refresh(config, store, RecordingEmbedder())
+
+    assert report.chars_chunkable == _chunkable(text)
+    assert report.chars_chunkable > report.chars_embedded
