@@ -39,6 +39,8 @@ class RefreshReport:
     removed: int
     unchanged: int
     defects: tuple[str, ...]
+    chars_chunkable: int = 0
+    chars_embedded: int = 0
 
 
 def refresh(config: RagmarkConfig, store: IndexStore, embedder: Embedder) -> RefreshReport:
@@ -104,6 +106,7 @@ def _run_pass(
     old_vectors: Any | None,
 ) -> RefreshReport:
     added = updated = removed = unchanged = 0
+    chars_chunkable = chars_embedded = 0
     defects: list[str] = []
     pending_texts: dict[str, str] = {}
     walked_paths: set[str] = set()
@@ -134,6 +137,8 @@ def _run_pass(
             meta, body = NoteMeta(None, (), ()), text
 
         chunks = chunk_mod.chunk_note(rel_path, body, meta, embedder.count_tokens)
+        chars_chunkable += len(parse.render_for_embedding(body)) + len(meta.description or "")
+        chars_embedded += sum(len(c.text) for c in chunks)
         unterminated = fences.unterminated_fence_line(body)
         if unterminated is not None:
             frontmatter_lines = text.count("\n") - body.count("\n")
@@ -161,6 +166,8 @@ def _run_pass(
         removed=removed,
         unchanged=unchanged,
         defects=tuple(defects),
+        chars_chunkable=chars_chunkable,
+        chars_embedded=chars_embedded,
     )
 
 
