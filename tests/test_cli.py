@@ -483,7 +483,15 @@ def test_index_verb_runs_and_prints_a_json_report(monkeypatch, capsys, make_vaul
     assert exit_code == 0
 
     report = json.loads(captured.out)
-    assert set(report) == {"added", "updated", "removed", "unchanged", "defects"}
+    assert set(report) == {
+        "added",
+        "updated",
+        "removed",
+        "unchanged",
+        "defects",
+        "chars_chunkable",
+        "chars_embedded",
+    }
     assert report["added"] > 0
     assert report["defects"] == []
 
