@@ -15,7 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ragmark import index
+from ragmark import chunk as chunk_mod
+from ragmark import index, parse
 from ragmark.config import RagmarkConfig
 from ragmark.embed import Embedder, FastembedEmbedder
 from ragmark.model import ModelIdentity
@@ -183,6 +184,98 @@ def test_incremental_refresh_touch_then_change_then_delete(tmp_path: Path) -> No
     }
     assert "b.md" not in remaining_notes
     assert_conservation(store)
+
+
+# --- char conservation reporting -------------------------------------------------
+
+
+def test_refresh_reports_chars_chunkable_and_embedded_per_pass(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    seed_vault(config)
+    store = IndexStore(config.index_dir)
+    embedder = RecordingEmbedder()
+
+    meta_a, body_a = parse.parse_note(NOTE_A)
+    meta_b, body_b = parse.parse_note(NOTE_B)
+    chunkable_a = len(parse.render_for_embedding(body_a)) + len(meta_a.description or "")
+    chunkable_b = len(parse.render_for_embedding(body_b)) + len(meta_b.description or "")
+    embedded_a = sum(
+        len(c.text) for c in chunk_mod.chunk_note("a.md", body_a, meta_a, embedder.count_tokens)
+    )
+    embedded_b = sum(
+        len(c.text) for c in chunk_mod.chunk_note("b.md", body_b, meta_b, embedder.count_tokens)
+    )
+
+    report = index.refresh(config, store, embedder)
+    assert report.chars_chunkable == chunkable_a + chunkable_b
+    assert report.chars_embedded == embedded_a + embedded_b
+
+    report = index.refresh(config, store, embedder)
+    assert report.chars_chunkable == 0
+    assert report.chars_embedded == 0
+
+    touched_mtime = BASE_MTIME + 1_000_000
+    path_a = config.vault_root / "a.md"
+    os.utime(path_a, ns=(touched_mtime, touched_mtime))
+    report = index.refresh(config, store, embedder)
+    assert report.updated == 0
+    assert report.chars_chunkable == 0
+    assert report.chars_embedded == 0
+
+    new_text = "# Note A\n\nCompletely different content now.\n"
+    changed_mtime = BASE_MTIME + 2_000_000
+    write_note(config, "a.md", new_text, changed_mtime)
+    report = index.refresh(config, store, embedder)
+    assert report.updated == 1
+
+    new_meta, new_body = parse.parse_note(new_text)
+    expected_chunkable = len(parse.render_for_embedding(new_body)) + len(new_meta.description or "")
+    expected_embedded = sum(
+        len(c.text) for c in chunk_mod.chunk_note("a.md", new_body, new_meta, embedder.count_tokens)
+    )
+    assert report.chars_chunkable == expected_chunkable
+    assert report.chars_embedded == expected_embedded
+
+
+def test_refresh_chars_chunkable_equals_chars_embedded_for_a_well_formed_note(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    text = "---\ndescription: A short note.\n---\n# Heading\n\nSee [[Other Note]] for more.\n"
+    write_note(config, "n.md", text, BASE_MTIME)
+    store = IndexStore(config.index_dir)
+    embedder = RecordingEmbedder()
+
+    report = index.refresh(config, store, embedder)
+
+    assert report.chars_chunkable > 0
+    assert report.chars_chunkable == report.chars_embedded
+
+
+def test_refresh_chars_chunkable_exceeds_chars_embedded_when_chunks_are_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = make_config(tmp_path)
+    text = (
+        "# Section One\n\nFirst section body text.\n\n# Section Two\n\nSecond section body text.\n"
+    )
+    write_note(config, "n.md", text, BASE_MTIME)
+    store = IndexStore(config.index_dir)
+    embedder = RecordingEmbedder()
+
+    real_chunk_note = chunk_mod.chunk_note
+
+    def dropping_chunk_note(note_path, body, meta, count_tokens):
+        return real_chunk_note(note_path, body, meta, count_tokens)[:-1]
+
+    monkeypatch.setattr(index.chunk_mod, "chunk_note", dropping_chunk_note)
+
+    report = index.refresh(config, store, embedder)
+
+    meta, body = parse.parse_note(text)
+    expected_chunkable = len(parse.render_for_embedding(body)) + len(meta.description or "")
+    assert report.chars_chunkable == expected_chunkable
+    assert report.chars_chunkable > report.chars_embedded
 
 
 # --- defects --------------------------------------------------------------------
